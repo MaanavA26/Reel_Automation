@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+
+.venv/
+.venv311/
+
+frontend/node_modules/
+backend/build/
+backend/*.egg-info/
+
+.env
+.env.*
+
+CLAUDE.md
