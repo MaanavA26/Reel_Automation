@@ -13,4 +13,3 @@ backend/*.egg-info/
 .env
 .env.*
 
-CLAUDE.md
