@@ -82,6 +82,35 @@ Never use `--no-verify` to skip hooks. If a hook fails, fix the underlying issue
 
 PRs should be small. If a PR touches more than ~5 logical concerns, split it.
 
+> **Bootstrap-period note (temporary).** CI gates (`ruff`, `mypy`, `pytest`, pre-commit) are scheduled to land in PR #3 of the bootstrap sequence. Until that PR merges, contributors may mark the **"Pre-commit checks pass"** checklist item as **n/a** with reason "CI not yet wired (PR #3)." This note will be removed when CI lands.
+
+---
+
+## Trivial-change bypass
+
+A change qualifies as **trivial** — and may collapse the PR checklist to a single line — if **all** of the following hold:
+
+- ≤10 net lines added or removed (across all files combined)
+- Touches only non-architectural Markdown (`*.md` outside `docs/adrs/` and `docs/standards/`) and/or repo metadata (`.gitignore`, `.editorconfig`, `.gitattributes`, and similar)
+- Does not change code, schemas, dependencies, CI config, security/permissions, behavior, `LICENSE`, or any file under `docs/adrs/` or `docs/standards/`
+- Does not introduce a new file longer than 30 lines
+
+Trivial PRs still require:
+
+- A feature branch (no commits on `main`, ever)
+- Conventional commit message + AI co-author trailer
+- A PR opened with the template
+- **One council reviewer** (a peer or AI reviewer) sanity-checking the diff before merge
+
+The PR description may collapse the full checklist into a single line:
+
+```
+Trivial bypass — n/a except branch hygiene and council review.
+<one-sentence justification of why this PR qualifies>
+```
+
+**Operating-model changes are never trivial.** Adding or modifying the bypass rule itself, or any change to `CONTRIBUTING.md`, `CLAUDE.md`, `AGENTS.md`, or `ARCHITECTURE.md` that alters contributor obligations or architectural direction, always goes through the full ritual.
+
 ---
 
 ## Architecture Decision Records (ADRs)
