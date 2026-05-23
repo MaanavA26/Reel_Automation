@@ -13,3 +13,5 @@ backend/*.egg-info/
 .env
 .env.*
 
+# Local-only agent brief; not tracked in VCS.
+REEL_AGENT_INSTRUCTIONS.md
