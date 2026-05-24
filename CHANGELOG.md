@@ -11,6 +11,10 @@ are not yet part of a tagged release. When cutting a release, move the
 
 ## [Unreleased]
 
+### Added
+
+- Apache License 2.0. `LICENSE` file at repo root; SPDX metadata in `backend/pyproject.toml` and `frontend/package.json`; reference in README.
+
 ## [0.1.0] - 2026-03-29
 
 ### Added
