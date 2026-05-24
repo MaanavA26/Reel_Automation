@@ -71,7 +71,7 @@ CI runs the backend gate against **`[3.11, 3.12]`**.
 
 CI runs Node 20 LTS. `frontend/package.json`'s `@types/node` major version must match the Node runtime major (`^20`).
 
-- Current state (as of this ADR): misaligned at `@types/node@^25.8.0`. The bump-to-`^20` is an **implementation follow-up** tracked in [issue #5](https://github.com/MaanavA26/Reel_Automation/issues/5).
+- Current state (as of this standard): misaligned at `@types/node@^25.8.0`. The bump-to-`^20` is an **implementation follow-up** tracked in [issue #5](https://github.com/MaanavA26/Reel_Automation/issues/5).
 - Future Node major bumps move CI runtime and `@types/node` together, in the same PR.
 
 **Decides [issue #5 item 1](https://github.com/MaanavA26/Reel_Automation/issues/5); implementation in a follow-up PR.**
@@ -90,7 +90,7 @@ PR #4's review also flagged two CI-matrix questions that belong in a testing-sta
 
 The rules above are the standard. Three explicit decisions worth highlighting:
 
-**1. `[3.11, 3.12]` Python matrix now; defer `3.13`.** Single-version CI is a credibility gap for a public-showcase production-grade project: anyone evaluating the repo reads `python_requires=">=3.11"` and expects ≥2 versions in the matrix. `3.12` is stable enough for the scaffold; `3.13` introduces typing/async changes that would benefit from real code to validate against. Two-version cost on a 19-second backend job rounds to seconds, and CI runners are free for public repos.
+**1. `[3.11, 3.12]` Python matrix now; defer `3.13`.** Single-version CI is a credibility gap for a production-grade project: anyone evaluating the repo reads `python_requires=">=3.11"` and expects ≥2 versions in the matrix. `3.12` is stable enough for the scaffold; `3.13` introduces typing/async changes that would benefit from real code to validate against. The added CI cost is acceptable while the backend job is small and the matrix meaningfully improves version coverage.
 
 **2. `@types/node` major must match Node runtime major.** PR #4 hit a real failure rooted in this exact misalignment. The rule prevents the failure mode in general, not just for Node 20. When Node CI bumps to 22 (or 24, the deprecation pressure flagged on PR #4), `@types/node` follows in the same PR.
 
@@ -120,7 +120,7 @@ The rules above are the standard. Three explicit decisions worth highlighting:
 
 - [CLAUDE.md §9.3](../../CLAUDE.md) — testing rules.
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) — PR checklist requires tests for behavior changes.
-- [PR #4 review verdict — non-blocking follow-ups](https://github.com/MaanavA26/Reel_Automation/pull/4#issuecomment-4529093528) — origin of the Python matrix and `@types/node` items.
-- [PR #6 review verdict](https://github.com/MaanavA26/Reel_Automation/pull/6#issuecomment-4529694676) — confirms deferred-checks sequencing aligns with this standards approach.
+- [PR #4 review verdict — non-blocking follow-ups](https://github.com/MaanavA26/Reel_Automation/pull/4#issuecomment-4529047589) — origin of the Python matrix and `@types/node` items.
+- [PR #6 review verdict](https://github.com/MaanavA26/Reel_Automation/pull/6#issuecomment-4529642609) — confirms deferred-checks sequencing aligns with this standards approach.
 - [Issue #5](https://github.com/MaanavA26/Reel_Automation/issues/5) — tracked follow-ups (this standard resolves items 1 and 3; item 2 is in [Standard 0001](./0001-coding-standards.md)).
 - Related: [Standard 0001 — Coding Standards](./0001-coding-standards.md).
