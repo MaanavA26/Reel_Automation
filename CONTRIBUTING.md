@@ -82,8 +82,6 @@ Never use `--no-verify` to skip hooks. If a hook fails, fix the underlying issue
 
 PRs should be small. If a PR touches more than ~5 logical concerns, split it.
 
-> **Bootstrap-period note (temporary).** CI gates (`ruff`, `mypy`, `pytest`, pre-commit) are scheduled to land in PR #3 of the bootstrap sequence. Until that PR merges, contributors may mark the **"Pre-commit checks pass"** checklist item as **n/a** with reason "CI not yet wired (PR #3)." This note will be removed when CI lands.
-
 ---
 
 ## Trivial-change bypass
