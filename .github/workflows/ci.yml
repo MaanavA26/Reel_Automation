@@ -70,3 +70,37 @@ jobs:
 
       - name: Build (tsc -b && vite build)
         run: npm run build
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.21.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so `gitleaks detect` can scan all commits, not
+          # just the shallow-clone tip.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+
+      - name: Scan
+        run: ./gitleaks detect --source . --verbose --no-banner
+
+  workflow-lint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Actionlint
+        uses: raven-actions/actionlint@v2
+        with:
+          flags: "-color"
