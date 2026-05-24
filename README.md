@@ -53,3 +53,9 @@ Production-grade scaffold for a modular system that supports research, content g
 `docs/adrs/` is reserved for architecture decision records.
 
 `docs/standards/` is reserved for implementation and engineering standards that apply across backend, frontend, and workflow modules.
+
+---
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [`LICENSE`](./LICENSE) for the full text. Copyright 2026 Maanav Aryan.
