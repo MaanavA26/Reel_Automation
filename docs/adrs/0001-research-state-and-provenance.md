@@ -86,7 +86,7 @@ All models use `ConfigDict(extra="forbid")`. Unknown fields raise `ValidationErr
 - LangGraph integration is the default path; no adapter layer is required between Pydantic models and graph state.
 - Strict schemas catch field-name typos and stale-API drift at the JSON boundary, not at runtime hundreds of lines downstream.
 - ID prefixes mean grep-ability in logs and explicit type-tagging without runtime overhead.
-- 96-bit entropy IDs are large enough that collisions are not a practical concern.
+- 64-bit entropy IDs are large enough that collisions are not a practical concern at Phase 0 scale (see the Identity scheme section for the analysis).
 
 ### Negative
 
