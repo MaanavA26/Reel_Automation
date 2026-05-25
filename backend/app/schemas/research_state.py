@@ -98,6 +98,47 @@ class KnowledgeAcquisitionState(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
 
 
+class SubQuestion(BaseModel):
+    """A decomposed question within a research plan.
+
+    The order of sub-questions in `ResearchPlan.sub_questions` is the
+    priority order (head = highest priority). An explicit `priority`
+    field is deliberately omitted at v1 — order alone is sufficient
+    and avoids the priority-vs-list-order ambiguity.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("sq"))
+    text: str
+    rationale: str | None = None
+
+
+class ResearchPlan(BaseModel):
+    """State produced by the Research Control band of Deep Research.
+
+    The Plan decomposes the job topic into sub-questions and optionally
+    refines the topic into a sharper goal statement. The original topic
+    stays on `ResearchState.topic`; the Plan is the decomposition.
+
+    Empty-vs-completed contract: `ResearchPlan()` (the default) represents
+    the pre-planning state. A completed plan — emitted by a future
+    Research Planner agent — must contain at least one `SubQuestion`;
+    an empty `sub_questions` list should be read as "planner has not run
+    yet," not "planner produced nothing useful." The completion signal
+    lives outside this model (a band-status field or workflow checkpoint)
+    and lands with the planner-agent PR. See ADR 0001 for the rationale
+    behind keeping lifecycle distinctions out of the schema for v1.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("plan"))
+    goal: str | None = None
+    sub_questions: list[SubQuestion] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ResearchState(BaseModel):
     """Canonical state container for a Deep Research workflow run.
 
@@ -115,6 +156,9 @@ class ResearchState(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    # Workflow order: plan first, then acquisition. Future band substates
+    # (reasoning, publishing) slot in after acquisition in subsequent PRs.
+    plan: ResearchPlan = Field(default_factory=ResearchPlan)
     acquisition: KnowledgeAcquisitionState = Field(
         default_factory=KnowledgeAcquisitionState,
     )

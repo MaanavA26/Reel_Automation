@@ -6,9 +6,11 @@ from app.schemas.research_state import (
     Evidence,
     JobStatus,
     KnowledgeAcquisitionState,
+    ResearchPlan,
     ResearchState,
     Source,
     SourceType,
+    SubQuestion,
 )
 
 __all__ = [
@@ -17,7 +19,9 @@ __all__ = [
     "HealthResponse",
     "JobStatus",
     "KnowledgeAcquisitionState",
+    "ResearchPlan",
     "ResearchState",
     "Source",
     "SourceType",
+    "SubQuestion",
 ]

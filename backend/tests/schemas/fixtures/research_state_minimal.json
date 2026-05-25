@@ -4,6 +4,18 @@
   "status": "running",
   "created_at": "2026-01-01T00:00:00Z",
   "updated_at": "2026-01-01T00:00:00Z",
+  "plan": {
+    "id": "plan_fixed_001",
+    "goal": "Understand the timeline of the thing.",
+    "sub_questions": [
+      {
+        "id": "sq_fixed_001",
+        "text": "When was the thing first claimed?",
+        "rationale": "Establishes the timeline anchor for downstream claims."
+      }
+    ],
+    "created_at": "2026-01-01T00:00:00Z"
+  },
   "acquisition": {
     "sources": [
       {

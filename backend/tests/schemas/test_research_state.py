@@ -14,9 +14,11 @@ from app.schemas.research_state import (
     Evidence,
     JobStatus,
     KnowledgeAcquisitionState,
+    ResearchPlan,
     ResearchState,
     Source,
     SourceType,
+    SubQuestion,
 )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "research_state_minimal.json"
@@ -28,6 +30,8 @@ def test_research_state_defaults() -> None:
     assert state.topic == "Quantum supremacy"
     assert state.status == JobStatus.QUEUED
     assert state.id.startswith("job_")
+    assert isinstance(state.plan, ResearchPlan)
+    assert state.plan.sub_questions == []
     assert isinstance(state.acquisition, KnowledgeAcquisitionState)
     assert state.acquisition.sources == []
     assert state.acquisition.chunks == []
@@ -36,6 +40,8 @@ def test_research_state_defaults() -> None:
 
 def test_id_format_prefixes() -> None:
     state = ResearchState(topic="t")
+    plan = ResearchPlan()
+    sub_q = SubQuestion(text="x")
     source = Source(url="https://x", type=SourceType.WEB)
     chunk = Chunk(source_id=source.id, text="x")
     evidence = Evidence(
@@ -49,6 +55,8 @@ def test_id_format_prefixes() -> None:
     )
 
     assert state.id.startswith("job_")
+    assert plan.id.startswith("plan_")
+    assert sub_q.id.startswith("sq_")
     assert source.id.startswith("src_")
     assert chunk.id.startswith("chk_")
     assert evidence.id.startswith("ev_")
@@ -106,6 +114,17 @@ def test_json_shape_matches_committed_fixture() -> None:
 
 
 def _build_minimal_populated_state() -> ResearchState:
+    sub_q = SubQuestion(
+        id="sq_fixed_001",
+        text="When was the thing first claimed?",
+        rationale="Establishes the timeline anchor for downstream claims.",
+    )
+    plan = ResearchPlan(
+        id="plan_fixed_001",
+        goal="Understand the timeline of the thing.",
+        sub_questions=[sub_q],
+        created_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+    )
     source = Source(
         id="src_fixed_001",
         url="https://example.com/paper",
@@ -136,6 +155,7 @@ def _build_minimal_populated_state() -> ResearchState:
         status=JobStatus.RUNNING,
         created_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
         updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+        plan=plan,
         acquisition=KnowledgeAcquisitionState(
             sources=[source],
             chunks=[chunk],
