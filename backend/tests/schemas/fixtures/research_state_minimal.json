@@ -1,0 +1,40 @@
+{
+  "id": "job_fixed_001",
+  "topic": "Example research topic",
+  "status": "running",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z",
+  "acquisition": {
+    "sources": [
+      {
+        "id": "src_fixed_001",
+        "url": "https://example.com/paper",
+        "type": "paper",
+        "title": "Example paper",
+        "discovered_at": "2026-01-01T00:00:00Z",
+        "raw_metadata": {}
+      }
+    ],
+    "chunks": [
+      {
+        "id": "chk_fixed_001",
+        "source_id": "src_fixed_001",
+        "text": "The thing happened.",
+        "position": 1
+      }
+    ],
+    "evidence": [
+      {
+        "id": "ev_fixed_001",
+        "claim": "The thing happened.",
+        "source_id": "src_fixed_001",
+        "source_url": "https://example.com/paper",
+        "chunk_id": "chk_fixed_001",
+        "chunk_text": "The thing happened.",
+        "confidence": 0.9,
+        "extracted_at": "2026-01-01T00:00:00Z",
+        "extracted_via": "extraction_v1"
+      }
+    ]
+  }
+}
