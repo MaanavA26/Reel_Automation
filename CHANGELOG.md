@@ -15,6 +15,7 @@ are not yet part of a tagged release. When cutting a release, move the
 
 - Apache License 2.0. `LICENSE` file at repo root; SPDX metadata in `backend/pyproject.toml` and `frontend/package.json`; reference in README.
 - Deep Research state and provenance schema (`backend/app/schemas/research_state.py`) — `ResearchState`, `KnowledgeAcquisitionState`, `Source`, `Chunk`, `Evidence` with attached (inline) provenance, type-prefixed opaque IDs, and timezone-aware UTC timestamps. Decisions documented in [ADR 0001](docs/adrs/0001-research-state-and-provenance.md). First Phase 0 feature.
+- Research Control band schema (`ResearchPlan`, `SubQuestion`) added to `backend/app/schemas/research_state.py`; `ResearchState` now includes a `plan` substate alongside `acquisition`. Second Phase 0 feature.
 
 ## [0.1.0] - 2026-03-29
 

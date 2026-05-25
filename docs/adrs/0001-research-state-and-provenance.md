@@ -31,10 +31,10 @@ A single canonical `ResearchState` Pydantic model is the container that flows th
 
 The four band sub-states:
 
-- `acquisition: KnowledgeAcquisitionState` — implemented in this PR.
-- `plan: ResearchPlan` — Research Control band, added in a subsequent Phase 0 PR.
-- `reasoning: KnowledgeReasoningState` — Knowledge Reasoning band, added in a subsequent Phase 0 PR.
-- `publishing: ResearchPublishingState` — Research Publishing band, added in a subsequent Phase 0 PR.
+- `plan: ResearchPlan` — Research Control band (implemented).
+- `acquisition: KnowledgeAcquisitionState` — Knowledge Acquisition band (implemented).
+- `reasoning: KnowledgeReasoningState` — Knowledge Reasoning band (pending).
+- `publishing: ResearchPublishingState` — Research Publishing band (pending).
 
 Each band's sub-state defaults to its empty form (e.g., `KnowledgeAcquisitionState()` with empty lists). The *presence* of a sub-state field is not a meaningful signal of "did this band run" — empty state means "no work yet." If a future workflow needs to distinguish "band has not started" from "band ran and produced empty output," a dedicated `band_status` enum is added at that time, not `None` defaults.
 
@@ -136,4 +136,4 @@ Use `model_config = ConfigDict(frozen=True)` so state is immutable; nodes constr
 - [`docs/standards/0001-coding-standards.md`](../standards/0001-coding-standards.md) — coding conventions this ADR's implementation conforms to.
 - [`docs/standards/0002-testing-standards.md`](../standards/0002-testing-standards.md) — test layout for the schema tests in this PR.
 - Future ADR 0002 will document the LangGraph integration that consumes this state shape.
-- Future Phase 0 PRs add `ResearchPlan` (Control band), `KnowledgeReasoningState`, and `ResearchPublishingState` substates per the architecture above.
+- Future Phase 0 PRs add `KnowledgeReasoningState` and `ResearchPublishingState` substates per the architecture above.
