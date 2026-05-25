@@ -120,6 +120,15 @@ class ResearchPlan(BaseModel):
     The Plan decomposes the job topic into sub-questions and optionally
     refines the topic into a sharper goal statement. The original topic
     stays on `ResearchState.topic`; the Plan is the decomposition.
+
+    Empty-vs-completed contract: `ResearchPlan()` (the default) represents
+    the pre-planning state. A completed plan — emitted by a future
+    Research Planner agent — must contain at least one `SubQuestion`;
+    an empty `sub_questions` list should be read as "planner has not run
+    yet," not "planner produced nothing useful." The completion signal
+    lives outside this model (a band-status field or workflow checkpoint)
+    and lands with the planner-agent PR. See ADR 0001 for the rationale
+    behind keeping lifecycle distinctions out of the schema for v1.
     """
 
     model_config = _STRICT
