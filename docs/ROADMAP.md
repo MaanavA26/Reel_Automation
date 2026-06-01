@@ -27,9 +27,10 @@
   deferred to M3 (its first consumer). [ADR 0003](adrs/0003-model-router-llm-fabric.md).
 
 ## Research Control band
-- ⬜ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node.
-  Lands the first concrete provider adapter (Anthropic) + its registration, wiring the
-  router into the `plan` node.
+- ✅ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node:
+  `ResearchPlannerAgent` calls the router (`PLANNING` role), maps a model DTO into the schema
+  (ids/timestamps schema-minted), and is wired into the `plan` node via factory-closure DI.
+  Fully offline-verified via `FakeProvider`. [ADR 0004](adrs/0004-node-dependency-injection.md).
 - ⬜ **M4 — Research Orchestrator.** Job lifecycle, status transitions, budgets, retries, progress, quality gates.
 
 ## Knowledge Acquisition band
@@ -49,5 +50,18 @@
 ## Surface
 - ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
 
+## Live providers (network-gated)
+- ⬜ **M-LP — Concrete LLM provider adapters.** Implement the real `ModelProvider` adapters
+  (Anthropic first) behind the M2 fabric + register them in the default policy, with
+  `@pytest.mark.integration` smoke tests. Batched here because the build sandbox has no
+  network to install/run provider SDKs; verified in a network-enabled session or in CI.
+  Everything upstream is built against the provider abstraction + `FakeProvider`, so this
+  milestone is thin and isolated.
+
 ---
-*Updated 2026-06-01. Current milestone: **M3** (Research Planner agent + first provider adapter).*
+*Updated 2026-06-01. Current milestone: **M4** (Research Orchestrator — job lifecycle, error/retry).*
+
+> **Build-environment note:** the agent sandbox has no outbound network, so milestones are
+> built and verified offline against `FakeProvider` and constructed fixtures. The thin real
+> provider adapters are collected into **M-LP** for a network-enabled run. Milestone branches
+> are stacked PRs (each based on its predecessor) until merges drain the chain.

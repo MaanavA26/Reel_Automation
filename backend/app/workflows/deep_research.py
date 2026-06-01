@@ -1,29 +1,32 @@
-"""Deep Research workflow — LangGraph skeleton (Phase 0, Milestone M1).
+"""Deep Research workflow — LangGraph orchestration.
 
 This module wires the canonical :class:`~app.schemas.research_state.ResearchState`
 through a linear sequence of band nodes (plan -> acquire -> reason -> publish)
-so that every later milestone has a compiled graph and a stable node contract
-to plug into.
+so that every milestone has a compiled graph and a stable node contract to plug
+into.
 
-The nodes here are **lifecycle stubs**: they advance ``status``/``updated_at``
-and demonstrate the state-threading contract, but contain no real intelligence.
-Real reasoning (the Research Planner agent, M3) and deterministic acquisition
-(Source Discovery/Ingestion, M5-M6) replace the stub bodies in later milestones.
+The ``plan`` node is real as of M3: it is bound to a `ResearchPlannerAgent`
+(factory-closure dependency injection, ADR 0004) and populates ``state.plan``.
+The ``acquire``/``reason``/``publish`` nodes remain **lifecycle stubs** —
+advancing ``status``/``updated_at`` and demonstrating the state-threading
+contract — until their owning milestones replace them (M5-M12).
 
 The node I/O contract, the partial-state-update return protocol, and the
 deferred fan-out accumulation decision are documented in
-``docs/adrs/0002-langgraph-workflow-integration.md``.
+``docs/adrs/0002-langgraph-workflow-integration.md``; the node dependency-
+injection pattern in ``docs/adrs/0004-node-dependency-injection.md``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from datetime import UTC, datetime
-from functools import lru_cache
-from typing import Any
+from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agents.research_planner import ResearchPlannerAgent
 from app.schemas.research_state import JobStatus, ResearchState, Source, SourceType
 
 # Node I/O contract (ADR 0002): every node is
@@ -37,13 +40,36 @@ from app.schemas.research_state import JobStatus, ResearchState, Source, SourceT
 StateUpdate = dict[str, Any]
 
 
-async def plan_node(state: ResearchState) -> StateUpdate:
-    """Research Control band entrypoint. Stub: marks the job ``RUNNING``.
+class _NodeFn(Protocol):
+    """Type of a workflow node callable.
 
-    The Research Planner agent (M3) replaces this body, populating
-    ``state.plan`` with decomposed sub-questions.
+    The ``state`` parameter is *named* (not positional-only as a bare
+    ``Callable[[ResearchState], ...]`` alias would be) so that closure-built
+    nodes satisfy LangGraph's ``_Node`` protocol, whose ``__call__`` accepts
+    ``state`` by keyword.
     """
-    return {"status": JobStatus.RUNNING, "updated_at": datetime.now(UTC)}
+
+    def __call__(self, state: ResearchState) -> Coroutine[Any, Any, StateUpdate]: ...
+
+
+def _make_plan_node(planner: ResearchPlannerAgent) -> _NodeFn:
+    """Build the Research Control band entrypoint node, bound to a planner.
+
+    Dependency injection is by factory-closure (ADR 0004): the node closes over
+    its `ResearchPlannerAgent` rather than reading it from LangGraph ``config``,
+    keeping the node signature minimal and the dependency typed and explicit.
+    The node populates ``state.plan`` and transitions the job to ``RUNNING``.
+    """
+
+    async def plan_node(state: ResearchState) -> StateUpdate:
+        plan = await planner.plan(state.topic)
+        return {
+            "status": JobStatus.RUNNING,
+            "plan": plan,
+            "updated_at": datetime.now(UTC),
+        }
+
+    return plan_node
 
 
 async def acquire_node(state: ResearchState) -> StateUpdate:
@@ -80,16 +106,17 @@ async def publish_node(state: ResearchState) -> StateUpdate:
     return {"status": JobStatus.COMPLETED, "updated_at": datetime.now(UTC)}
 
 
-def build_research_graph() -> CompiledStateGraph:
+def build_research_graph(planner: ResearchPlannerAgent) -> CompiledStateGraph:
     """Build and compile the linear Deep Research workflow graph.
 
-    Topology (M1): ``START -> plan -> acquire -> reason -> publish -> END``.
-    No conditional routing, retries, budgets, or checkpointer yet — the
-    ``FAILED``/``CANCELLED`` lifecycle and orchestration policy land in M4
-    (see ADR 0002 § the M1/M4 status seam).
+    Topology: ``START -> plan -> acquire -> reason -> publish -> END``. The
+    ``plan`` node is bound to ``planner`` (factory-closure DI, ADR 0004); the
+    other bands are still stubs (M5-M12). No conditional routing, retries,
+    budgets, or checkpointer yet — the ``FAILED``/``CANCELLED`` lifecycle and
+    orchestration policy land in M4 (see ADR 0002 § the M1/M4 status seam).
     """
     graph = StateGraph(ResearchState)
-    graph.add_node("plan", plan_node)
+    graph.add_node("plan", _make_plan_node(planner))
     graph.add_node("acquire", acquire_node)
     graph.add_node("reason", reason_node)
     graph.add_node("publish", publish_node)
@@ -101,23 +128,19 @@ def build_research_graph() -> CompiledStateGraph:
     return graph.compile()
 
 
-@lru_cache(maxsize=1)
-def get_research_graph() -> CompiledStateGraph:
-    """Return the process-wide compiled research graph (compiled once, reused).
-
-    A compiled graph is stateless across runs — per-job state is passed into
-    each invocation — so a single cached instance is safe to share. Mirrors
-    the ``get_settings()`` caching pattern in ``app.core.config``.
-    """
-    return build_research_graph()
-
-
-async def run_research(state: ResearchState) -> ResearchState:
+async def run_research(
+    state: ResearchState,
+    *,
+    planner: ResearchPlannerAgent,
+) -> ResearchState:
     """Run a research job end-to-end and return the final typed state.
 
-    ``CompiledStateGraph.ainvoke`` returns a plain ``dict``; this entrypoint
-    re-validates it back into a strict ``ResearchState``, which doubles as the
-    final ``extra='forbid'`` integrity gate on the merged state.
+    The graph is built per dependency-set (it closes over ``planner``), so
+    there is no global compiled singleton; callers inject the dependencies a
+    run needs. ``CompiledStateGraph.ainvoke`` returns a plain ``dict``; this
+    entrypoint re-validates it back into a strict ``ResearchState``, which
+    doubles as the final ``extra='forbid'`` integrity gate on the merged state.
     """
-    result = await get_research_graph().ainvoke(state)
+    graph = build_research_graph(planner)
+    result = await graph.ainvoke(state)
     return ResearchState.model_validate(result)

@@ -122,13 +122,15 @@ class ResearchPlan(BaseModel):
     stays on `ResearchState.topic`; the Plan is the decomposition.
 
     Empty-vs-completed contract: `ResearchPlan()` (the default) represents
-    the pre-planning state. A completed plan — emitted by a future
-    Research Planner agent — must contain at least one `SubQuestion`;
+    the pre-planning state. A completed plan — emitted by the
+    `ResearchPlannerAgent` (M3) — must contain at least one `SubQuestion`;
     an empty `sub_questions` list should be read as "planner has not run
-    yet," not "planner produced nothing useful." The completion signal
-    lives outside this model (a band-status field or workflow checkpoint)
-    and lands with the planner-agent PR. See ADR 0001 for the rationale
-    behind keeping lifecycle distinctions out of the schema for v1.
+    yet," not "planner produced nothing useful." The planner enforces this by
+    raising `PlannerError` rather than emitting an empty plan, so a non-empty
+    `sub_questions` list is the de-facto "planner ran" signal. An *explicit*
+    band-status field (distinguishing running/failed/etc.) is deferred to the
+    Orchestrator (M4); see ADR 0001 for the rationale behind keeping lifecycle
+    distinctions out of the schema for v1.
     """
 
     model_config = _STRICT
