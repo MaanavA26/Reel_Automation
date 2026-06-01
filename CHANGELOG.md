@@ -16,6 +16,7 @@ are not yet part of a tagged release. When cutting a release, move the
 - Apache License 2.0. `LICENSE` file at repo root; SPDX metadata in `backend/pyproject.toml` and `frontend/package.json`; reference in README.
 - Deep Research state and provenance schema (`backend/app/schemas/research_state.py`) — `ResearchState`, `KnowledgeAcquisitionState`, `Source`, `Chunk`, `Evidence` with attached (inline) provenance, type-prefixed opaque IDs, and timezone-aware UTC timestamps. Decisions documented in [ADR 0001](docs/adrs/0001-research-state-and-provenance.md). First Phase 0 feature.
 - Research Control band schema (`ResearchPlan`, `SubQuestion`) added to `backend/app/schemas/research_state.py`; `ResearchState` now includes a `plan` substate alongside `acquisition`. Second Phase 0 feature.
+- Deep Research workflow skeleton (`backend/app/workflows/deep_research.py`) — a compiled LangGraph graph wiring `ResearchState` through async lifecycle-stub nodes (plan → acquire → reason → publish) that runs end-to-end (`queued → completed`). Establishes the node I/O contract (partial-state-update returns) every later agent/tool node plugs into. Decisions and the empirically-grounded fan-out deferral documented in [ADR 0002](docs/adrs/0002-langgraph-workflow-integration.md). Adds the `langgraph` dependency. Roadmap milestone M1; see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [0.1.0] - 2026-03-29
 
