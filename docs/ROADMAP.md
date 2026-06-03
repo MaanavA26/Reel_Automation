@@ -40,7 +40,12 @@
   until M10 gives it something to judge.
 
 ## Knowledge Acquisition band
-- ⬜ **M5 — Source Discovery agent.** sub-questions → candidate `Source`s (search/query planning).
+- ✅ **M5 — Source Discovery agent.** `SourceDiscoveryAgent` plans search queries via the
+  model (`PLANNING` role, judgment) and retrieves `Source`s via an injected `SearchProvider`
+  tool (`services/search/`, faked offline; real adapter → M-LP). The LLM never mints a
+  `Source.url` (§11 evidence-vs-inference, enforced structurally); added typed
+  `Source.discovered_via`. Single-node acquire keeps the fan-out reducer deferred to M7.
+  [ADR 0006](adrs/0006-source-discovery-and-search-fabric.md).
 - ⬜ **M6 — Source Ingestion tool(s).** Deterministic fetch + parse (web/PDF/YouTube/repo) → `Chunk`s + normalization.
 - ⬜ **M7 — Evidence Extraction agent.** chunks → `Evidence` with attached provenance + confidence.
 
@@ -65,7 +70,7 @@
   milestone is thin and isolated.
 
 ---
-*Updated 2026-06-03. Current milestone: **M5** (Source Discovery agent) — M4a (failure path) shipped.*
+*Updated 2026-06-03. Current milestone: **M6** (Source Ingestion) — M5 (Source Discovery) shipped.*
 
 > **Build-environment note:** the agent sandbox has no outbound network, so milestones are
 > built and verified offline against `FakeProvider` and constructed fixtures. The thin real

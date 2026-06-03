@@ -42,7 +42,7 @@ def test_id_format_prefixes() -> None:
     state = ResearchState(topic="t")
     plan = ResearchPlan()
     sub_q = SubQuestion(text="x")
-    source = Source(url="https://x", type=SourceType.WEB)
+    source = Source(url="https://x", type=SourceType.WEB, discovered_via="search:fake")
     chunk = Chunk(source_id=source.id, text="x")
     evidence = Evidence(
         claim="x",
@@ -129,6 +129,7 @@ def _build_minimal_populated_state() -> ResearchState:
         id="src_fixed_001",
         url="https://example.com/paper",
         type=SourceType.PAPER,
+        discovered_via="search:fake",
         title="Example paper",
         discovered_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
     )

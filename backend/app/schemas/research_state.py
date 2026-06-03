@@ -42,13 +42,21 @@ _STRICT = ConfigDict(extra="forbid")
 
 
 class Source(BaseModel):
-    """A source discovered during the Knowledge Acquisition band."""
+    """A source discovered during the Knowledge Acquisition band.
+
+    `discovered_via` records *how* the source was found (e.g. ``"search:fake"``,
+    ``"search:tavily"``). It is first-class provenance, symmetric with
+    `Evidence.extracted_via`, and is the machine-readable encoding of the
+    evidence-vs-inference distinction (CLAUDE.md §11): a `Source` is always
+    tool-discovered, never minted by an LLM. See ADR 0006.
+    """
 
     model_config = _STRICT
 
     id: str = Field(default_factory=lambda: _gen_id("src"))
     url: str
     type: SourceType
+    discovered_via: str
     title: str | None = None
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     raw_metadata: dict[str, str] = Field(default_factory=dict)
