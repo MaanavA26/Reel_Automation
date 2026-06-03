@@ -21,12 +21,15 @@
   through async stub nodes that compile and run end-to-end (queued → … → completed).
   Node I/O contract = partial-state-update returns; fan-out accumulation deferred to M5/M7.
   Adds `langgraph` dep. [ADR 0002](adrs/0002-langgraph-workflow-integration.md).
-- ⬜ **M2 — Model router / LLM fabric.** Policy-driven, role-based model selection
-  behind a provider interface (planning / extraction / long-context / fallback roles).
-  Agent-vs-tool boundary for LLM calls. Adds provider SDK dep. ADR.
+- ✅ **M2 — Model router / LLM fabric.** Provider-neutral, policy-driven role-based
+  model selection (`services/llm/`): `ModelProvider` protocol, `ModelRouter`/`RolePolicy`,
+  config-sourced `default_policy`, hermetic `FakeProvider`. Concrete Anthropic adapter
+  deferred to M3 (its first consumer). [ADR 0003](adrs/0003-model-router-llm-fabric.md).
 
 ## Research Control band
 - ⬜ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node.
+  Lands the first concrete provider adapter (Anthropic) + its registration, wiring the
+  router into the `plan` node.
 - ⬜ **M4 — Research Orchestrator.** Job lifecycle, status transitions, budgets, retries, progress, quality gates.
 
 ## Knowledge Acquisition band
@@ -47,4 +50,4 @@
 - ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
 
 ---
-*Updated 2026-06-01. Current milestone: **M2** (model router / LLM fabric).*
+*Updated 2026-06-01. Current milestone: **M3** (Research Planner agent + first provider adapter).*
