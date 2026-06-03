@@ -43,6 +43,15 @@ def _planner(sub_question_texts: tuple[str, ...] = ("q1", "q2")) -> ResearchPlan
     return ResearchPlannerAgent(router)
 
 
+def _empty_planner() -> ResearchPlannerAgent:
+    """A planner whose model returns no sub-questions, so plan() raises PlannerError."""
+    router = ModelRouter(
+        providers={"fake": FakeProvider([_PlannerOutput(sub_questions=[])])},
+        policy={ModelRole.PLANNING: ModelChoice("fake", "planning-model")},
+    )
+    return ResearchPlannerAgent(router)
+
+
 def _run(topic: str = "t") -> ResearchState:
     return asyncio.run(run_research(ResearchState(topic=topic), planner=_planner()))
 
@@ -111,3 +120,28 @@ def test_real_substates_present() -> None:
 def test_publish_node_transitions_to_completed() -> None:
     update = asyncio.run(publish_node(ResearchState(topic="t")))
     assert update["status"] is JobStatus.COMPLETED
+
+
+# --- M4: error handling + conditional routing (ADR 0005) --------------------
+
+
+def test_planner_failure_routes_to_failed() -> None:
+    # A raised PlannerError is converted to a FAILED state update and
+    # short-circuits the pipeline; run_research returns rather than crashing.
+    final = asyncio.run(run_research(ResearchState(topic="t"), planner=_empty_planner()))
+    assert final.status is JobStatus.FAILED
+    assert final.error is not None
+    assert "PlannerError" in final.error
+
+
+def test_failed_run_short_circuits_remaining_bands() -> None:
+    # Failure at plan routes to the terminal sink, so acquire never runs and
+    # no placeholder source is appended.
+    final = asyncio.run(run_research(ResearchState(topic="t"), planner=_empty_planner()))
+    assert final.acquisition.sources == []
+
+
+def test_happy_path_leaves_error_unset() -> None:
+    final = _run()
+    assert final.status is JobStatus.COMPLETED
+    assert final.error is None

@@ -158,6 +158,14 @@ class ResearchState(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    # Job-level failure reason, set when `status` becomes FAILED (ADR 0005).
+    # Top-level lifecycle metadata, not a band substate — ADR 0001's
+    # "no None defaults for band fields" rule does not apply here. A single
+    # scalar is single-writer-safe under the linear graph; aggregating errors
+    # from concurrent branches is topology-contingent and deferred with the
+    # M5/M7 fan-out reducer decision (same class as ADR 0002 §6).
+    error: str | None = None
+
     # Workflow order: plan first, then acquisition. Future band substates
     # (reasoning, publishing) slot in after acquisition in subsequent PRs.
     plan: ResearchPlan = Field(default_factory=ResearchPlan)
