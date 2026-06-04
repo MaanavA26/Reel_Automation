@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +13,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="REEL_AUTOMATION_",
+        env_file=".env",
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 
@@ -26,6 +29,12 @@ class Settings(BaseSettings):
     extraction_model: str = "claude-sonnet-4-6"
     long_context_model: str = "claude-opus-4-8"
     fallback_model: str = "claude-haiku-4-5-20251001"
+
+    # Provider connection (used by the OpenAI-compatible adapter). Empty by
+    # default; set via .env / env vars for live use. `api_key` is a SecretStr so
+    # it never leaks into logs or reprs. See .env.example.
+    base_url: str = ""
+    api_key: SecretStr = SecretStr("")
 
 
 @lru_cache(maxsize=1)

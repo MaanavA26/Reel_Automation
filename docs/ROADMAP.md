@@ -62,15 +62,18 @@
 - ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
 
 ## Live providers (network-gated)
-- ⬜ **M-LP — Concrete LLM provider adapters.** Implement the real `ModelProvider` adapters
-  (Anthropic first) behind the M2 fabric + register them in the default policy, with
-  `@pytest.mark.integration` smoke tests. Batched here because the build sandbox has no
-  network to install/run provider SDKs; verified in a network-enabled session or in CI.
-  Everything upstream is built against the provider abstraction + `FakeProvider`, so this
-  milestone is thin and isolated.
+- 🔨 **M-LP — Concrete provider adapters.**
+  - ✅ **M-LP.1 (LLM):** `OpenAICompatibleProvider` (httpx, OpenAI `/chat/completions`) —
+    one adapter serves Groq/OpenRouter/Together/Cerebras/Ollama by config. `json_object` +
+    schema-in-prompt + `model_validate_json` + error-fed retry. `build_router_from_settings`
+    composition root + `python -m app.cli.plan` harness + `@pytest.mark.integration` live test.
+    **The Planner is now runnable against a real free LLM.** [ADR 0007](adrs/0007-openai-compatible-llm-adapter.md).
+  - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
+  - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
+    free-model JSON reliability proves insufficient.
 
 ---
-*Updated 2026-06-03. Current milestone: **M6** (Source Ingestion) — M5 (Source Discovery) shipped.*
+*Updated 2026-06-04. Current milestone: **M6** (Source Ingestion). M1–M5 merged to `main`; M-LP.1 (LLM adapter — Planner testable with a real key) in review.*
 
 > **Build-environment note:** the agent sandbox has no outbound network, so milestones are
 > built and verified offline against `FakeProvider` and constructed fixtures. The thin real
