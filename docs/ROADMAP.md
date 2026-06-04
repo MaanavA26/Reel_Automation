@@ -31,7 +31,13 @@
   `ResearchPlannerAgent` calls the router (`PLANNING` role), maps a model DTO into the schema
   (ids/timestamps schema-minted), and is wired into the `plan` node via factory-closure DI.
   Fully offline-verified via `FakeProvider`. [ADR 0004](adrs/0004-node-dependency-injection.md).
-- ⬜ **M4 — Research Orchestrator.** Job lifecycle, status transitions, budgets, retries, progress, quality gates.
+- 🔨 **M4 — Research Orchestrator (failure path done).** Deterministic failure path: `error` field,
+  uniform exception→`FAILED` wrapper, first conditional edges (route off `status`) → terminal
+  `failed` sink. [ADR 0005](adrs/0005-workflow-error-handling.md). **Remaining orchestrator work is
+  distributed to its real consumers** (per ADR 0005 § Deferred): retries/budgets → M-LP (need live
+  providers), progress → M13 (streaming API), `CANCELLED` → checkpointer milestone, quality
+  gates/revision loops → M10 (Editorial Critic agent). The §5.6 "Orchestrator Agent" is aspirational
+  until M10 gives it something to judge.
 
 ## Knowledge Acquisition band
 - ⬜ **M5 — Source Discovery agent.** sub-questions → candidate `Source`s (search/query planning).
@@ -59,7 +65,7 @@
   milestone is thin and isolated.
 
 ---
-*Updated 2026-06-01. Current milestone: **M4** (Research Orchestrator — job lifecycle, error/retry).*
+*Updated 2026-06-03. Current milestone: **M5** (Source Discovery agent) — M4a (failure path) shipped.*
 
 > **Build-environment note:** the agent sandbox has no outbound network, so milestones are
 > built and verified offline against `FakeProvider` and constructed fixtures. The thin real
