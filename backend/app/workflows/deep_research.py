@@ -5,11 +5,12 @@ through a sequence of band nodes (plan -> acquire -> reason -> publish) on the
 happy path, with each band conditionally short-circuiting to a terminal
 ``failed`` sink if a node fails (M4).
 
-The ``plan`` node is real as of M3: it is bound to a `ResearchPlannerAgent`
-(factory-closure dependency injection, ADR 0004) and populates ``state.plan``.
-The ``acquire``/``reason``/``publish`` nodes remain **lifecycle stubs** —
-advancing ``status``/``updated_at`` and demonstrating the state-threading
-contract — until their owning milestones replace them (M5-M12).
+The ``plan`` (M3) and ``acquire`` (M5) nodes are real: bound to a
+`ResearchPlannerAgent` and a `SourceDiscoveryAgent` respectively via
+factory-closure dependency injection (ADR 0004). The ``reason``/``publish``
+nodes remain **lifecycle stubs** — advancing ``status``/``updated_at`` and
+demonstrating the state-threading contract — until their owning milestones
+replace them (M8-M12).
 
 ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
 ``0002-langgraph-workflow-integration.md``; node dependency injection in
@@ -27,7 +28,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.research_planner import ResearchPlannerAgent
-from app.schemas.research_state import JobStatus, ResearchState, Source, SourceType
+from app.agents.source_discovery import SourceDiscoveryAgent
+from app.schemas.research_state import JobStatus, ResearchState
 
 # Node I/O contract (ADR 0002): every node is
 # ``async def node(state: ResearchState) -> StateUpdate`` where ``StateUpdate``
@@ -72,21 +74,22 @@ def _make_plan_node(planner: ResearchPlannerAgent) -> _NodeFn:
     return plan_node
 
 
-async def acquire_node(state: ResearchState) -> StateUpdate:
-    """Knowledge Acquisition band. Stub: appends one placeholder ``Source``.
+def _make_acquire_node(discovery: SourceDiscoveryAgent) -> _NodeFn:
+    """Build the Knowledge Acquisition band node, bound to a discovery agent.
 
-    Demonstrates that a list-channel write threads through the graph and
-    survives the merge. Source Discovery/Ingestion (M5-M6) replace this body.
+    Mirrors `_make_plan_node` (factory-closure DI, ADR 0004). The agent plans
+    queries and retrieves sources via its search tool; the node writes them to
+    ``acquisition.sources`` in a *single* channel write, so no fan-out reducer is
+    needed yet — the reducer decision stays deferred to M7 (parallel
+    extraction), per ADR 0002 §6 and ADR 0006.
     """
-    placeholder = Source(
-        url="https://example.com",
-        type=SourceType.WEB,
-        title="placeholder source (M1 skeleton)",
-    )
-    acquisition = state.acquisition.model_copy(
-        update={"sources": [*state.acquisition.sources, placeholder]},
-    )
-    return {"acquisition": acquisition, "updated_at": datetime.now(UTC)}
+
+    async def acquire_node(state: ResearchState) -> StateUpdate:
+        sources = await discovery.discover(state.plan)
+        acquisition = state.acquisition.model_copy(update={"sources": sources})
+        return {"acquisition": acquisition, "updated_at": datetime.now(UTC)}
+
+    return acquire_node
 
 
 async def reason_node(state: ResearchState) -> StateUpdate:
@@ -154,18 +157,21 @@ def _route_on_status(state: ResearchState) -> Literal["continue", "failed"]:
     return "failed" if state.status is JobStatus.FAILED else "continue"
 
 
-def build_research_graph(planner: ResearchPlannerAgent) -> CompiledStateGraph:
+def build_research_graph(
+    planner: ResearchPlannerAgent,
+    discovery: SourceDiscoveryAgent,
+) -> CompiledStateGraph:
     """Build and compile the Deep Research workflow graph.
 
     Topology: ``START -> plan -> acquire -> reason -> publish -> END`` on the
     happy path, with each band conditionally short-circuiting to a terminal
-    ``failed`` sink if a node failed (ADR 0005). The ``plan`` node is bound to
-    ``planner`` (factory-closure DI, ADR 0004). Retries, budgets, ``CANCELLED``,
-    and quality gates are deferred (ADR 0005 § Deferred).
+    ``failed`` sink if a node failed (ADR 0005). The ``plan`` and ``acquire``
+    nodes are bound to their agents via factory-closure DI (ADR 0004). Retries,
+    budgets, ``CANCELLED``, and quality gates are deferred (ADR 0005 § Deferred).
     """
     graph = StateGraph(ResearchState)
     graph.add_node("plan", _with_failure_handling(_make_plan_node(planner)))
-    graph.add_node("acquire", _with_failure_handling(acquire_node))
+    graph.add_node("acquire", _with_failure_handling(_make_acquire_node(discovery)))
     graph.add_node("reason", _with_failure_handling(reason_node))
     graph.add_node("publish", _with_failure_handling(publish_node))
     graph.add_node("failed", failed_node)
@@ -186,15 +192,16 @@ async def run_research(
     state: ResearchState,
     *,
     planner: ResearchPlannerAgent,
+    discovery: SourceDiscoveryAgent,
 ) -> ResearchState:
     """Run a research job end-to-end and return the final typed state.
 
-    The graph is built per dependency-set (it closes over ``planner``), so
-    there is no global compiled singleton; callers inject the dependencies a
+    The graph is built per dependency-set (it closes over the injected agents),
+    so there is no global compiled singleton; callers inject the dependencies a
     run needs. ``CompiledStateGraph.ainvoke`` returns a plain ``dict``; this
     entrypoint re-validates it back into a strict ``ResearchState``, which
     doubles as the final ``extra='forbid'`` integrity gate on the merged state.
     """
-    graph = build_research_graph(planner)
+    graph = build_research_graph(planner, discovery)
     result = await graph.ainvoke(state)
     return ResearchState.model_validate(result)

@@ -22,6 +22,7 @@
         "id": "src_fixed_001",
         "url": "https://example.com/paper",
         "type": "paper",
+        "discovered_via": "search:fake",
         "title": "Example paper",
         "discovered_at": "2026-01-01T00:00:00Z",
         "raw_metadata": {}
