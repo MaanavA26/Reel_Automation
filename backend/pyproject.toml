@@ -24,8 +24,10 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# Default run is hermetic; integration (network/credential) tests run via -m integration.
+addopts = "-m 'not integration'"
 markers = [
-    "integration: live external-service tests requiring credentials (run with -m integration)",
+    "integration: live external-service tests requiring network/credentials (run with -m integration)",
 ]
 
 [tool.ruff]
