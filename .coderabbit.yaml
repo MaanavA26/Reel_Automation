@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://www.coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit AI review config. Lives on the default branch; applied to every PR.
+# Reference: https://docs.coderabbit.ai/reference/configuration
+language: en-US
+reviews:
+  # "chill" = fewer nitpicks; suits a small team and keeps signal high.
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  # Don't review generated/lock artifacts.
+  path_filters:
+    - "!**/*.lock"
+    - "!frontend/package-lock.json"
+    - "!**/__pycache__/**"
+  # Review against this repo's actual standards (CLAUDE.md / ADRs).
+  path_instructions:
+    - path: "backend/app/**/*.py"
+      instructions: >-
+        Enforce CLAUDE.md: strict agent-vs-tool separation — judgment/reasoning in
+        agents/, deterministic IO/parsing/API-wrapping in tools/ & services/, graph
+        wiring in workflows/. Require typed signatures, Pydantic models with
+        extra='forbid', and that all LLM/provider calls go through the model fabric
+        (no hardcoded providers or base_urls inside agents). Flag any secret/API-key
+        literals immediately.
+    - path: "backend/tests/**/*.py"
+      instructions: >-
+        Prefer fakes/factories over mocks; tests must be hermetic (no network) unless
+        marked @pytest.mark.integration. Each behavior change should have a focused
+        test; flag dropped assertions.
+    - path: "docs/adrs/**/*.md"
+      instructions: >-
+        Verify the ADR has Context / Decision / Consequences / Alternatives. Flag any
+        factual claim, quote, or model/version id presented without a source or marked
+        as verified — this repo requires claims to be cited or labelled unverified.
+chat:
+  auto_reply: true
+knowledge_base:
+  learnings:
+    scope: auto

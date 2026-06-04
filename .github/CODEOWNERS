@@ -1,0 +1,11 @@
+# Code owners — auto-requested as reviewers on matching PRs.
+# Docs: https://docs.github.com/articles/about-code-owners
+
+# Default owner for everything.
+*                       @MaanavA26
+
+# Architecture-critical areas (explicit, even though covered by the default).
+/CLAUDE.md              @MaanavA26
+/docs/adrs/             @MaanavA26
+/docs/standards/        @MaanavA26
+/backend/app/schemas/   @MaanavA26
