@@ -12,9 +12,11 @@ enumeration + measured eval, not from-memory recall.
 ## 0. TL;DR
 
 - **Working providers (tested live 2026-06-04):** Google **Gemini** (newest models,
-  free tier), **Groq** (fast, free), **HuggingFace** router (122 newest open models,
-  free-tier credits). **OpenAI** direct key = invalid (401). **Azure OpenAI** =
-  unreachable (private-endpoint/403); also an older `gpt-4o-mini` deployment.
+  free tier), **Groq** (fast, free), **HuggingFace** router (122 newest open models),
+  **NVIDIA build** / NIM (119 open models incl. DeepSeek-V4-Pro). **OpenAI** direct
+  key = invalid (401). **Azure OpenAI** = unreachable (private-endpoint/403).
+  *Note:* NVIDIA serves Google's open **Gemma** models but **not Gemini** (Gemini is
+  Google-only). Four independent working providers = real failover redundancy.
 - **For the engine's structured tasks, schema-adherence is ~100% across all working
   models** — so the real differentiators are **latency, free-tier rate limits, and
   recency**, not raw "smartness."
@@ -40,6 +42,13 @@ enumeration + measured eval, not from-memory recall.
 5. **LLM-as-judge is offline, to *set* policy** — not a runtime judge on every call
    (that multiplies cost/latency on the hot path). Use an *independent* judge model
    (not the candidate itself — self-judging inflates scores; observed in §3).
+6. **Provider redundancy beats provider loyalty.** The same strong open models are
+   reachable through *multiple* providers (e.g. DeepSeek-V4-Pro on HuggingFace *and*
+   NVIDIA; Llama-3.3-70B on Groq, HF, *and* NVIDIA). Routing a role to a model
+   *family* with 2+ provider sources makes the pipeline resilient to any single
+   provider's 429s/outages. The same `OpenAICompatibleProvider` also speaks to a
+   **local/self-hosted** server (Ollama / vLLM, `base_url=localhost`) — a future
+   "no-API-limit" fallback tier that needs only hardware, no new code.
 
 ## 2. Provider landscape (enumerated live, 2026-06-04)
 
@@ -50,6 +59,7 @@ All reachable via the single `OpenAICompatibleProvider` (ADR 0007) by config alo
 | **Gemini** | ✅ works, free tier | `…/v1beta/openai` | `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-flash-latest`; also `deep-research-*`, `imagen-4`, `veo-3.1`, `gemini-embedding-2` (media/embed for later layers) |
 | **Groq** | ✅ works, free, fastest | `api.groq.com/openai/v1` | `llama-3.3-70b-versatile`, `meta-llama/llama-4-scout-17b`, `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3-32b`, `llama-3.1-8b-instant`, `whisper-large-v3` (STT) |
 | **HuggingFace** router | ✅ works, free-tier credits | `router.huggingface.co/v1` | 122 models incl. `deepseek-ai/DeepSeek-V4-Pro`/`V4-Flash`, `Qwen3.6`, `GLM-5.1`, `Kimi-K2.6`, `MiniMax-M2.7`, `gemma-4`, `GLM-OCR` |
+| **NVIDIA build** (NIM) | ✅ works, free credits | `integrate.api.nvidia.com/v1` | 119 models incl. `deepseek-ai/deepseek-v4-pro`/`v4-flash`, `meta/llama-4-maverick`, `meta/llama-3.3-70b-instruct` (validated live), `google/gemma-4-31b-it`, Nemotron. **No Gemini** (Google-only) |
 | **OpenAI** (direct) | ❌ key invalid (401) | `api.openai.com/v1` | Works once a valid key is supplied |
 | **Azure OpenAI** | ❌ 403 private-endpoint | `…openai.azure.com` | VNet-locked (corp-network only); deployment `gpt-4o-mini` (older). Has an Azure **Document Intelligence** (OCR) endpoint → useful for M6 ingestion |
 
@@ -147,6 +157,11 @@ provider-failover (catch 429/timeout → retry next provider) is a follow-up mil
 - **Build the failover trigger** (M4) so the cross-vendor fallback is automatic.
 - **Eval M7–M10 tasks** against this method once built (the "to eval" rows above).
 - **Nvidia `nemotron_ocr`** key: not a chat LLM — reserve for M6 OCR.
+- **Local/self-hosted fallback tier** (Ollama / vLLM via the same adapter): the
+  "offload so there's no API issue" option — software path is ready, needs only
+  hardware. Add when free-tier limits become a real production constraint.
+- **NVIDIA build** is now a registered candidate source (esp. for DeepSeek-V4-Pro /
+  Llama-4 as a redundant backup to HuggingFace).
 
 ## References
 - [ADR 0003](adrs/0003-model-router-llm-fabric.md) (model fabric), [ADR 0007](adrs/0007-openai-compatible-llm-adapter.md)
