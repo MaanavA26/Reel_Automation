@@ -23,4 +23,9 @@ REEL_AGENT_INSTRUCTIONS.md
 keys.md
 *.key
 secrets.*
-
+# Certificate / key material (defense-in-depth; CodeRabbit suggestion).
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
