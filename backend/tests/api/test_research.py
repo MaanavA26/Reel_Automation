@@ -15,6 +15,7 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.agents.creator_packet import CreatorPacketAgent, _HookDraft, _PacketOutput
 from app.agents.cross_verification import (
     CrossVerificationAgent,
     _VerdictDraft,
@@ -26,6 +27,7 @@ from app.agents.evidence_extraction import (
     _ExtractedClaim,
     _ExtractionOutput,
 )
+from app.agents.report import ReportAgent, _ReportOutput, _SectionDraft
 from app.agents.research_planner import (
     ResearchPlannerAgent,
     _PlannerOutput,
@@ -132,6 +134,18 @@ def _fake_deps() -> ResearchDeps:
         )
     )
     critic = EditorialCriticAgent(_router(_CritiqueOutput(issues=[], rationale="ok")))
+    reporter = ReportAgent(
+        _router(
+            _ReportOutput(
+                title="t",
+                abstract="a",
+                sections=[_SectionDraft(heading="h", narrative="n", findings=[0])],
+            )
+        )
+    )
+    strategist = CreatorPacketAgent(
+        _router(_PacketOutput(hooks=[_HookDraft(text="hook", findings=[0])]))
+    )
     return ResearchDeps(
         planner=planner,
         discovery=discovery,
@@ -140,6 +154,8 @@ def _fake_deps() -> ResearchDeps:
         verifier=verifier,
         synthesizer=synthesizer,
         critic=critic,
+        reporter=reporter,
+        strategist=strategist,
     )
 
 

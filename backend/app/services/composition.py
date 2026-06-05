@@ -28,9 +28,11 @@ fake-backed `ResearchDeps` and overriding the `Depends` provider.
 
 from __future__ import annotations
 
+from app.agents.creator_packet import CreatorPacketAgent
 from app.agents.cross_verification import CrossVerificationAgent
 from app.agents.editorial_critic import EditorialCriticAgent
 from app.agents.evidence_extraction import EvidenceExtractionAgent
+from app.agents.report import ReportAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
 from app.agents.synthesis import SynthesisAgent
@@ -91,4 +93,6 @@ def build_research_deps(settings: Settings | None = None) -> ResearchDeps:
         verifier=CrossVerificationAgent(router),
         synthesizer=SynthesisAgent(router),
         critic=EditorialCriticAgent(router),
+        reporter=ReportAgent(router),
+        strategist=CreatorPacketAgent(router),
     )
