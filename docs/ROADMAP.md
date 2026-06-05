@@ -44,15 +44,22 @@
   model (`PLANNING` role, judgment) and retrieves `Source`s via an injected `SearchProvider`
   tool (`services/search/`, faked offline; real adapter → M-LP). The LLM never mints a
   `Source.url` (§11 evidence-vs-inference, enforced structurally); added typed
-  `Source.discovered_via`. Single-node acquire keeps the fan-out reducer deferred to M7.
-  [ADR 0006](adrs/0006-source-discovery-and-search-fabric.md).
+  `Source.discovered_via`. Single-node acquire keeps the fan-out reducer deferred to the
+  checkpointer milestone. [ADR 0006](adrs/0006-source-discovery-and-search-fabric.md).
 - ✅ **M6 — Source Ingestion (HTML v1).** Deterministic fetch + parse + chunk: a `FetchProvider`
   fabric (`services/ingestion/`) with a real hardened `HttpxFetchProvider` + `FakeFetchProvider`,
   a pure stdlib HTML parser + fixed-window chunker, and an `IngestionService` wired into a new
   `ingest` node (`plan→acquire→ingest→reason→publish`). WEB-only v1; PDF/YouTube/OCR (Azure DI,
   Nvidia) deferred to M-LP; `Chunk.parsed_via` deferred until a multi-parser exists.
   [ADR 0008](adrs/0008-source-ingestion-and-fetch-fabric.md).
-- ⬜ **M7 — Evidence Extraction agent.** chunks → `Evidence` with attached provenance + confidence.
+- ✅ **M7 — Evidence Extraction agent.** chunks → `Evidence` (`EvidenceExtractionAgent`,
+  `EXTRACTION` role). The model authors only `claim` + `confidence`; provenance
+  (`source_id`/`source_url`/`chunk_id`/`chunk_text`) is **code-attached** from the real
+  `Chunk`/`Source` — §11 evidence-vs-inference made structural (third agent to enforce it).
+  Per-chunk isolation; tolerates per-chunk failures, raises on zero total. New `extract` node
+  (`plan→acquire→ingest→extract→reason→publish`). Introduces the `ResearchDeps` container (the
+  M6-flagged kwarg-threshold trigger); fan-out reducer + per-chunk concurrency stay deferred to
+  the checkpointer milestone. [ADR 0009](adrs/0009-evidence-extraction.md).
 
 ## Knowledge Reasoning band
 - ⬜ **M8 — Cross-Verification agent.** Corroborate claims across sources; contradiction/weak-support detection.

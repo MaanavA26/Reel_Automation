@@ -1,32 +1,36 @@
 """Deep Research workflow — LangGraph orchestration.
 
 This module wires the canonical :class:`~app.schemas.research_state.ResearchState`
-through a sequence of band nodes (plan -> acquire -> reason -> publish) on the
-happy path, with each band conditionally short-circuiting to a terminal
-``failed`` sink if a node fails (M4).
+through a sequence of band nodes (plan -> acquire -> ingest -> extract -> reason
+-> publish) on the happy path, with each band conditionally short-circuiting to a
+terminal ``failed`` sink if a node fails (M4).
 
-The ``plan`` (M3), ``acquire`` (M5), and ``ingest`` (M6) nodes are real: bound to
-a `ResearchPlannerAgent`, a `SourceDiscoveryAgent`, and an `IngestionService`
-respectively via factory-closure dependency injection (ADR 0004). The
-``reason``/``publish`` nodes remain **lifecycle stubs** — advancing
-``status``/``updated_at`` and demonstrating the state-threading contract — until
-their owning milestones replace them (M8-M12).
+The ``plan`` (M3), ``acquire`` (M5), ``ingest`` (M6), and ``extract`` (M7) nodes
+are real: bound to a `ResearchPlannerAgent`, a `SourceDiscoveryAgent`, an
+`IngestionService`, and an `EvidenceExtractionAgent` respectively via
+factory-closure dependency injection (ADR 0004), bundled into a single
+`ResearchDeps` container (ADR 0009). The ``reason``/``publish`` nodes remain
+**lifecycle stubs** — advancing ``status``/``updated_at`` and demonstrating the
+state-threading contract — until their owning milestones replace them (M8-M12).
 
 ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
 ``0002-langgraph-workflow-integration.md``; node dependency injection in
 ``0004-node-dependency-injection.md``; error handling + conditional routing in
-``0005-workflow-error-handling.md``.
+``0005-workflow-error-handling.md``; dependency bundling in
+``0009-evidence-extraction.md``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agents.evidence_extraction import EvidenceExtractionAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
 from app.schemas.research_state import JobStatus, ResearchState
@@ -41,6 +45,22 @@ from app.services.ingestion.service import IngestionService
 # ``extra='forbid'``. Trade-off: an unknown/typo'd channel key is silently
 # dropped rather than raising (see ADR 0002 § Negative).
 StateUpdate = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ResearchDeps:
+    """The agents/services the workflow nodes depend on, injected as one bundle.
+
+    Introduced at M7 (ADR 0009) once the per-node injected-dependency count
+    crossed the threshold ADR 0008 flagged — keeps ``run_research`` /
+    ``build_research_graph`` to a single ``deps`` parameter instead of a growing
+    list of kwargs.
+    """
+
+    planner: ResearchPlannerAgent
+    discovery: SourceDiscoveryAgent
+    ingestion: IngestionService
+    extractor: EvidenceExtractionAgent
 
 
 class _NodeFn(Protocol):
@@ -81,8 +101,8 @@ def _make_acquire_node(discovery: SourceDiscoveryAgent) -> _NodeFn:
     Mirrors `_make_plan_node` (factory-closure DI, ADR 0004). The agent plans
     queries and retrieves sources via its search tool; the node writes them to
     ``acquisition.sources`` in a *single* channel write, so no fan-out reducer is
-    needed yet — the reducer decision stays deferred to M7 (parallel
-    extraction), per ADR 0002 §6 and ADR 0006.
+    needed yet — the reducer decision stays deferred to the checkpointer
+    milestone, per ADR 0002 §6 and ADR 0006.
     """
 
     async def acquire_node(state: ResearchState) -> StateUpdate:
@@ -98,7 +118,7 @@ def _make_ingest_node(ingestion: IngestionService) -> _NodeFn:
 
     Deterministic tool work (CLAUDE.md §4): fetch + parse + chunk the discovered
     sources into ``acquisition.chunks`` in a *single* channel write (fan-out
-    reducer stays deferred to M7, per ADR 0002 §6 / ADR 0008).
+    reducer stays deferred to the checkpointer milestone, per ADR 0002 §6 / ADR 0008).
     """
 
     async def ingest_node(state: ResearchState) -> StateUpdate:
@@ -107,6 +127,23 @@ def _make_ingest_node(ingestion: IngestionService) -> _NodeFn:
         return {"acquisition": acquisition, "updated_at": datetime.now(UTC)}
 
     return ingest_node
+
+
+def _make_extract_node(extractor: EvidenceExtractionAgent) -> _NodeFn:
+    """Build the Evidence Extraction node (M7), bound to an extraction agent.
+
+    Extracts grounded `Evidence` from the ingested chunks into
+    ``acquisition.evidence`` in a *single* channel write. Per-chunk concurrency
+    and the graph-level fan-out reducer stay deferred to the checkpointer
+    milestone — the single-writer pattern needs neither (ADR 0009 / ADR 0002 §6).
+    """
+
+    async def extract_node(state: ResearchState) -> StateUpdate:
+        evidence = await extractor.extract(state.acquisition.chunks, state.acquisition.sources)
+        acquisition = state.acquisition.model_copy(update={"evidence": evidence})
+        return {"acquisition": acquisition, "updated_at": datetime.now(UTC)}
+
+    return extract_node
 
 
 async def reason_node(state: ResearchState) -> StateUpdate:
@@ -174,24 +211,21 @@ def _route_on_status(state: ResearchState) -> Literal["continue", "failed"]:
     return "failed" if state.status is JobStatus.FAILED else "continue"
 
 
-def build_research_graph(
-    planner: ResearchPlannerAgent,
-    discovery: SourceDiscoveryAgent,
-    ingestion: IngestionService,
-) -> CompiledStateGraph:
+def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
     """Build and compile the Deep Research workflow graph.
 
-    Topology: ``START -> plan -> acquire -> ingest -> reason -> publish -> END``
-    on the happy path, with each band conditionally short-circuiting to a
-    terminal ``failed`` sink if a node failed (ADR 0005). The ``plan``,
-    ``acquire``, and ``ingest`` nodes are bound to their collaborators via
-    factory-closure DI (ADR 0004). Retries, budgets, ``CANCELLED``, and quality
-    gates are deferred (ADR 0005 § Deferred).
+    Topology: ``START -> plan -> acquire -> ingest -> extract -> reason ->
+    publish -> END`` on the happy path, with each band conditionally
+    short-circuiting to a terminal ``failed`` sink if a node failed (ADR 0005).
+    The ``plan``/``acquire``/``ingest``/``extract`` nodes are bound to their
+    collaborators (from ``deps``) via factory-closure DI (ADR 0004). Retries,
+    budgets, ``CANCELLED``, and quality gates are deferred (ADR 0005 § Deferred).
     """
     graph = StateGraph(ResearchState)
-    graph.add_node("plan", _with_failure_handling(_make_plan_node(planner)))
-    graph.add_node("acquire", _with_failure_handling(_make_acquire_node(discovery)))
-    graph.add_node("ingest", _with_failure_handling(_make_ingest_node(ingestion)))
+    graph.add_node("plan", _with_failure_handling(_make_plan_node(deps.planner)))
+    graph.add_node("acquire", _with_failure_handling(_make_acquire_node(deps.discovery)))
+    graph.add_node("ingest", _with_failure_handling(_make_ingest_node(deps.ingestion)))
+    graph.add_node("extract", _with_failure_handling(_make_extract_node(deps.extractor)))
     graph.add_node("reason", _with_failure_handling(reason_node))
     graph.add_node("publish", _with_failure_handling(publish_node))
     graph.add_node("failed", failed_node)
@@ -200,7 +234,8 @@ def build_research_graph(
     bands = (
         ("plan", "acquire"),
         ("acquire", "ingest"),
-        ("ingest", "reason"),
+        ("ingest", "extract"),
+        ("extract", "reason"),
         ("reason", "publish"),
     )
     for source, following in bands:
@@ -214,21 +249,15 @@ def build_research_graph(
     return graph.compile()
 
 
-async def run_research(
-    state: ResearchState,
-    *,
-    planner: ResearchPlannerAgent,
-    discovery: SourceDiscoveryAgent,
-    ingestion: IngestionService,
-) -> ResearchState:
+async def run_research(state: ResearchState, *, deps: ResearchDeps) -> ResearchState:
     """Run a research job end-to-end and return the final typed state.
 
-    The graph is built per dependency-set (it closes over the injected
-    collaborators), so there is no global compiled singleton; callers inject the
-    dependencies a run needs. ``CompiledStateGraph.ainvoke`` returns a plain
-    ``dict``; this entrypoint re-validates it back into a strict ``ResearchState``,
-    which doubles as the final ``extra='forbid'`` integrity gate.
+    The graph is built per dependency-set (it closes over ``deps``), so there is
+    no global compiled singleton; callers inject the dependencies a run needs.
+    ``CompiledStateGraph.ainvoke`` returns a plain ``dict``; this entrypoint
+    re-validates it back into a strict ``ResearchState``, which doubles as the
+    final ``extra='forbid'`` integrity gate.
     """
-    graph = build_research_graph(planner, discovery, ingestion)
+    graph = build_research_graph(deps)
     result = await graph.ainvoke(state)
     return ResearchState.model_validate(result)
