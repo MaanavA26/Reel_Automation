@@ -46,7 +46,12 @@
   `Source.url` (§11 evidence-vs-inference, enforced structurally); added typed
   `Source.discovered_via`. Single-node acquire keeps the fan-out reducer deferred to M7.
   [ADR 0006](adrs/0006-source-discovery-and-search-fabric.md).
-- ⬜ **M6 — Source Ingestion tool(s).** Deterministic fetch + parse (web/PDF/YouTube/repo) → `Chunk`s + normalization.
+- ✅ **M6 — Source Ingestion (HTML v1).** Deterministic fetch + parse + chunk: a `FetchProvider`
+  fabric (`services/ingestion/`) with a real hardened `HttpxFetchProvider` + `FakeFetchProvider`,
+  a pure stdlib HTML parser + fixed-window chunker, and an `IngestionService` wired into a new
+  `ingest` node (`plan→acquire→ingest→reason→publish`). WEB-only v1; PDF/YouTube/OCR (Azure DI,
+  Nvidia) deferred to M-LP; `Chunk.parsed_via` deferred until a multi-parser exists.
+  [ADR 0008](adrs/0008-source-ingestion-and-fetch-fabric.md).
 - ⬜ **M7 — Evidence Extraction agent.** chunks → `Evidence` with attached provenance + confidence.
 
 ## Knowledge Reasoning band
@@ -73,9 +78,10 @@
     free-model JSON reliability proves insufficient.
 
 ---
-*Updated 2026-06-04. Current milestone: **M6** (Source Ingestion). M1–M5 merged to `main`; M-LP.1 (LLM adapter — Planner testable with a real key) in review.*
+*Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
 
-> **Build-environment note:** the agent sandbox has no outbound network, so milestones are
-> built and verified offline against `FakeProvider` and constructed fixtures. The thin real
-> provider adapters are collected into **M-LP** for a network-enabled run. Milestone branches
-> are stacked PRs (each based on its predecessor) until merges drain the chain.
+> **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
+> and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are
+> verified hermetically (`Fake*` providers + `httpx.MockTransport`) plus `@pytest.mark.integration`
+> live smoke tests; only deps requiring a fresh install (e.g. provider SDKs, OCR libs) defer to a
+> network-enabled run. The provider adapters that *do* defer are collected under **M-LP**.

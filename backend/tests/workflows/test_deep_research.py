@@ -24,6 +24,9 @@ from app.agents.source_discovery import (
     _DiscoveryQuery,
 )
 from app.schemas.research_state import JobStatus, ResearchState, SourceType
+from app.services.ingestion.base import FetchedContent
+from app.services.ingestion.fakes import FakeFetchProvider
+from app.services.ingestion.service import IngestionService
 from app.services.llm.base import ModelRole
 from app.services.llm.fakes import FakeProvider
 from app.services.llm.router import ModelChoice, ModelRouter
@@ -70,14 +73,30 @@ def _discovery(n_sources: int = 2) -> SourceDiscoveryAgent:
     return SourceDiscoveryAgent(_router(output), search)
 
 
+def _ingestion(n_sources: int = 2) -> IngestionService:
+    """Ingestion service whose fake fetcher serves the discovery agent's URLs."""
+    by_url = {
+        f"https://s{i}.com": FetchedContent(
+            url=f"https://s{i}.com", content=f"<p>body {i}</p>".encode(), content_type="text/html"
+        )
+        for i in range(n_sources)
+    }
+    return IngestionService(FakeFetchProvider(by_url))
+
+
 def _run(topic: str = "t") -> ResearchState:
     return asyncio.run(
-        run_research(ResearchState(topic=topic), planner=_planner(), discovery=_discovery())
+        run_research(
+            ResearchState(topic=topic),
+            planner=_planner(),
+            discovery=_discovery(),
+            ingestion=_ingestion(),
+        )
     )
 
 
 def test_graph_compiles() -> None:
-    assert build_research_graph(_planner(), _discovery()) is not None
+    assert build_research_graph(_planner(), _discovery(), _ingestion()) is not None
 
 
 def test_run_research_reaches_completed() -> None:
@@ -94,14 +113,18 @@ def test_job_identity_stable_across_run() -> None:
     # Partial-dict returns never reconstruct state, so id/created_at are
     # preserved by construction (ADR 0002).
     initial = ResearchState(topic="t")
-    final = asyncio.run(run_research(initial, planner=_planner(), discovery=_discovery()))
+    final = asyncio.run(
+        run_research(initial, planner=_planner(), discovery=_discovery(), ingestion=_ingestion())
+    )
     assert final.id == initial.id
     assert final.created_at == initial.created_at
 
 
 def test_updated_at_advances() -> None:
     initial = ResearchState(topic="t")
-    final = asyncio.run(run_research(initial, planner=_planner(), discovery=_discovery()))
+    final = asyncio.run(
+        run_research(initial, planner=_planner(), discovery=_discovery(), ingestion=_ingestion())
+    )
     assert final.updated_at >= initial.updated_at
 
 
@@ -109,7 +132,10 @@ def test_plan_node_populates_plan() -> None:
     # M3: the plan node is bound to the planner and writes state.plan.
     final = asyncio.run(
         run_research(
-            ResearchState(topic="t"), planner=_planner(("a", "b", "c")), discovery=_discovery()
+            ResearchState(topic="t"),
+            planner=_planner(("a", "b", "c")),
+            discovery=_discovery(),
+            ingestion=_ingestion(),
         )
     )
     assert [sq.text for sq in final.plan.sub_questions] == ["a", "b", "c"]
@@ -121,11 +147,52 @@ def test_acquire_node_populates_sources() -> None:
     # guard — ADR 0006).
     final = asyncio.run(
         run_research(
-            ResearchState(topic="t"), planner=_planner(), discovery=_discovery(n_sources=3)
+            ResearchState(topic="t"),
+            planner=_planner(),
+            discovery=_discovery(n_sources=3),
+            ingestion=_ingestion(n_sources=3),
         )
     )
     assert len(final.acquisition.sources) == 3
     assert all(s.discovered_via == "search:fake" for s in final.acquisition.sources)
+
+
+def test_ingest_node_populates_chunks() -> None:
+    # M6: the ingest node fetches+parses+chunks the discovered sources.
+    final = _run()
+    assert final.acquisition.chunks, "ingest node produced no chunks"
+    assert all(c.source_id for c in final.acquisition.chunks)
+
+
+def test_mixed_source_types_only_web_ingested() -> None:
+    # M6: discovery yields a WEB and a PDF source; v1 ingests only WEB, skips the
+    # PDF, and the job still COMPLETES (no crash on the unsupported type).
+    output = _DiscoveryOutput(queries=[_DiscoveryQuery(query="q", source_type=SourceType.WEB)])
+    search = FakeSearchProvider(
+        [
+            SearchResult(url="https://web.com", source_type=SourceType.WEB),
+            SearchResult(url="https://doc.com/f.pdf", source_type=SourceType.PDF),
+        ]
+    )
+    discovery = SourceDiscoveryAgent(_router(output), search)
+    ingestion = IngestionService(
+        FakeFetchProvider(
+            {
+                "https://web.com": FetchedContent(
+                    url="https://web.com", content=b"<p>web body</p>", content_type="text/html"
+                )
+            }
+        )
+    )
+    final = asyncio.run(
+        run_research(
+            ResearchState(topic="t"), planner=_planner(), discovery=discovery, ingestion=ingestion
+        )
+    )
+    assert final.status is JobStatus.COMPLETED
+    assert final.acquisition.chunks
+    web_ids = {s.id for s in final.acquisition.sources if s.type is SourceType.WEB}
+    assert all(c.source_id in web_ids for c in final.acquisition.chunks)
 
 
 def test_plan_node_transitions_to_running() -> None:
@@ -161,7 +228,12 @@ def test_planner_failure_routes_to_failed() -> None:
     # A raised PlannerError is converted to a FAILED state update and
     # short-circuits the pipeline; run_research returns rather than crashing.
     final = asyncio.run(
-        run_research(ResearchState(topic="t"), planner=_empty_planner(), discovery=_discovery())
+        run_research(
+            ResearchState(topic="t"),
+            planner=_empty_planner(),
+            discovery=_discovery(),
+            ingestion=_ingestion(),
+        )
     )
     assert final.status is JobStatus.FAILED
     assert final.error is not None
@@ -172,7 +244,12 @@ def test_failed_run_short_circuits_remaining_bands() -> None:
     # Failure at plan routes to the terminal sink, so acquire never runs and
     # no source is discovered.
     final = asyncio.run(
-        run_research(ResearchState(topic="t"), planner=_empty_planner(), discovery=_discovery())
+        run_research(
+            ResearchState(topic="t"),
+            planner=_empty_planner(),
+            discovery=_discovery(),
+            ingestion=_ingestion(),
+        )
     )
     assert final.acquisition.sources == []
 
@@ -190,7 +267,10 @@ def test_discovery_failure_routes_to_failed() -> None:
     # into FAILED and short-circuit — the contract ADR 0005 established uniformly.
     final = asyncio.run(
         run_research(
-            ResearchState(topic="t"), planner=_planner(), discovery=_discovery(n_sources=0)
+            ResearchState(topic="t"),
+            planner=_planner(),
+            discovery=_discovery(n_sources=0),
+            ingestion=_ingestion(),
         )
     )
     assert final.status is JobStatus.FAILED
