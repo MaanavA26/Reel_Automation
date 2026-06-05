@@ -39,6 +39,7 @@ from collections.abc import Callable
 
 import httpx
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.media.schemas import SynthesizedSpeech
 
 PROVIDER_NAME = "http"
@@ -61,7 +62,7 @@ class HttpTtsError(RuntimeError):
     """
 
 
-class HttpTtsProvider:
+class HttpTtsProvider(CloseOwnedClientMixin):
     """A ``TTSProvider`` over a generic REST TTS endpoint."""
 
     name = PROVIDER_NAME
@@ -80,6 +81,7 @@ class HttpTtsProvider:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._sink = sink
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def synthesize(self, *, text: str, voice: str) -> SynthesizedSpeech:

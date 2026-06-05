@@ -13,6 +13,10 @@ frontend/*.tsbuildinfo
 backend/build/
 backend/*.egg-info/
 
+# Rendered media artifacts (ffmpeg CompositionService default output dir).
+renders/
+backend/renders/
+
 .env
 .env.*
 !.env.example

@@ -38,6 +38,7 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -50,6 +51,7 @@ from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
 from app.agents.synthesis import SynthesisAgent
 from app.core.config import Settings, get_settings
+from app.core.lifecycle import AsyncClosable
 from app.media.composition.base import CompositionService
 from app.media.composition.ffmpeg import FfmpegCompositionService
 from app.media.tts.base import TTSProvider
@@ -150,8 +152,8 @@ def _build_model_provider(settings: Settings) -> ModelProvider:
     )
 
 
-def _build_router(settings: Settings) -> ModelRouter:
-    """Build a `ModelRouter` from the configured provider + default role policy.
+def _build_router(settings: Settings) -> tuple[ModelRouter, ModelProvider]:
+    """Build a `ModelRouter` + return its underlying provider for lifecycle.
 
     The provider is registered under the **config name** (``default_provider``),
     not the adapter's own ``.name``: the default policy keys every role by
@@ -159,12 +161,16 @@ def _build_router(settings: Settings) -> ModelRouter:
     ``"openai-compatible"`` regardless of the preset (``groq`` etc.). Registering
     under the config name is what makes role resolution succeed for every
     selectable backend.
+
+    The provider is also returned so the composition root can close its
+    httpx client on shutdown (ADR 0044) — the router itself is not closable.
     """
     provider = _build_model_provider(settings)
-    return ModelRouter(
+    router = ModelRouter(
         providers={settings.default_provider: provider},
         policy=default_policy(settings),
     )
+    return router, provider
 
 
 # --- Search provider selection (ADR 0032) -----------------------------------
@@ -197,22 +203,39 @@ def _build_search_provider(settings: Settings) -> SearchProvider:
     )
 
 
-def build_research_deps(settings: Settings | None = None) -> ResearchDeps:
-    """Assemble the workflow's `ResearchDeps` bundle from settings.
+@dataclass(frozen=True)
+class ResearchBundle:
+    """A built `ResearchDeps` plus the httpx-owning providers to close on shutdown.
+
+    The composition root is the only place that knows which concrete adapters were
+    minted (the agents wrap them privately), so it returns the `AsyncClosable`
+    seams alongside the deps rather than have the API layer reach through agent
+    internals to find their clients (ADR 0044; preserves the agent/tool boundary,
+    CLAUDE.md §4/§10). The app lifespan drains ``closables`` on shutdown.
+    """
+
+    deps: ResearchDeps
+    closables: tuple[AsyncClosable, ...]
+
+
+def build_research_deps(settings: Settings | None = None) -> ResearchBundle:
+    """Assemble the workflow's `ResearchDeps` bundle (+ its closables) from settings.
 
     All LLM-backed agents share one `ModelRouter` (built from the configured
     provider + role policy); the discovery agent additionally needs a
-    `SearchProvider` and ingestion needs a `FetchProvider`. An unconfigured model
-    or search backend surfaces as a loud `CompositionError` — see the module
-    docstring.
+    `SearchProvider` and ingestion needs a `FetchProvider`. Each of those three
+    httpx-owning seams is returned as an `AsyncClosable` so the app can close its
+    client on shutdown (ADR 0044). An unconfigured model or search backend
+    surfaces as a loud `CompositionError` — see the module docstring.
     """
     resolved = settings or get_settings()
-    router = _build_router(resolved)
+    router, model_provider = _build_router(resolved)
     search = _build_search_provider(resolved)
-    return ResearchDeps(
+    fetch = HttpxFetchProvider()
+    deps = ResearchDeps(
         planner=ResearchPlannerAgent(router),
         discovery=SourceDiscoveryAgent(router, search),
-        ingestion=IngestionService(HttpxFetchProvider()),
+        ingestion=IngestionService(fetch),
         extractor=EvidenceExtractionAgent(router),
         verifier=CrossVerificationAgent(router),
         synthesizer=SynthesisAgent(router),
@@ -220,6 +243,16 @@ def build_research_deps(settings: Settings | None = None) -> ResearchDeps:
         reporter=ReportAgent(router),
         strategist=CreatorPacketAgent(router),
     )
+    # The live model/search adapters here are all `CloseOwnedClientMixin`
+    # subclasses (only the Fake* test doubles, never built by this root, are not).
+    # The `ModelProvider`/`SearchProvider` protocols don't declare `aclose` (the
+    # fakes have no client to close), so narrow to `AsyncClosable` for the bundle.
+    closables: tuple[AsyncClosable, ...] = (
+        cast(AsyncClosable, model_provider),
+        cast(AsyncClosable, search),
+        fetch,
+    )
+    return ResearchBundle(deps=deps, closables=closables)
 
 
 # --- Media production deps (ADR 0032) ---------------------------------------
@@ -257,8 +290,22 @@ class MediaDeps:
     voice: str = "narrator"
 
 
-def build_media_deps(settings: Settings | None = None) -> MediaDeps:
-    """Assemble the live `MediaDeps` bundle from settings (ADR 0032).
+@dataclass(frozen=True)
+class MediaBundle:
+    """A built `MediaDeps` plus the httpx-owning media providers to close on shutdown.
+
+    The media-band analogue of `ResearchBundle` (ADR 0044): the TTS provider — and
+    the stock visual provider when configured — own httpx clients that the app
+    closes on shutdown. ``FfmpegCompositionService`` shells out to a binary and
+    owns no client, so it is not a closable.
+    """
+
+    deps: MediaDeps
+    closables: tuple[AsyncClosable, ...]
+
+
+def build_media_deps(settings: Settings | None = None) -> MediaBundle:
+    """Assemble the live `MediaDeps` bundle (+ its closables) from settings (ADR 0032).
 
     Wires the real media seams for an end-to-end render:
 
@@ -303,17 +350,21 @@ def build_media_deps(settings: Settings | None = None) -> MediaDeps:
 
     visuals: VisualProvider | None = None
     visual_sink: VisualSink | None = None
+    closables: list[AsyncClosable] = [tts]
     if resolved.stock_api_key.get_secret_value():
-        visuals = StockVisualProvider(api_key=resolved.stock_api_key.get_secret_value())
+        stock = StockVisualProvider(api_key=resolved.stock_api_key.get_secret_value())
+        visuals = stock
         visual_sink = _make_filesystem_visual_sink(output_dir)
+        closables.append(stock)
 
-    return MediaDeps(
+    deps = MediaDeps(
         tts=tts,
         composition=composition,
         visuals=visuals,
         visual_sink=visual_sink,
         voice=resolved.tts_voice,
     )
+    return MediaBundle(deps=deps, closables=tuple(closables))
 
 
 def _make_filesystem_visual_sink(output_dir: Path) -> VisualSink:

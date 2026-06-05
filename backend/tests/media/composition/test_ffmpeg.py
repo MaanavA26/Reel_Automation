@@ -210,19 +210,49 @@ def test_render_returns_descriptor_and_records_call(tmp_path: Path) -> None:
     assert service.calls[0].visual_uris == ["/tmp/bg.png"]
 
 
-def test_render_writes_srt_sidecar(tmp_path: Path) -> None:
+def test_render_feeds_srt_to_ffmpeg_then_cleans_it_up(tmp_path: Path) -> None:
+    """The captions reach ffmpeg via a transient .srt that the render removes.
+
+    The .srt is an implementation detail, not a published artifact: it must exist
+    *during* the ffmpeg call (so `format_srt` output is what gets burned in) and be
+    gone once a successful render returns — only the .mp4 is the contract.
+    """
     service = FfmpegCompositionService(output_dir=tmp_path)
-    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+    captured: dict[str, str] = {}
+
+    def fake_run(args: list[str]) -> subprocess.CompletedProcess[bytes]:
+        # The subtitles path is the last token of the subtitles='...' filter arg.
+        srt_path = next(p for p in tmp_path.glob("*.srt"))
+        captured["contents"] = srt_path.read_text(encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    with patch.object(service, "_run", side_effect=fake_run):
         asyncio.run(
             service.render(
                 audio=_audio(uri="/tmp/a.wav"), captions=_captions(), visual_uris=["/tmp/bg.png"]
             )
         )
-    srt_files = list(tmp_path.glob("*.srt"))
-    assert len(srt_files) == 1
-    contents = srt_files[0].read_text(encoding="utf-8")
-    assert "00:00:00,000 --> 00:00:02,000" in contents
-    assert "Hello" in contents and "World" in contents
+
+    # During the call the .srt carried the formatted cues...
+    assert "00:00:00,000 --> 00:00:02,000" in captured["contents"]
+    assert "Hello" in captured["contents"] and "World" in captured["contents"]
+    # ...and a successful render leaves only the .mp4 behind, no .srt litter.
+    assert list(tmp_path.glob("*.srt")) == []
+
+
+def test_render_cleans_up_srt_on_failure(tmp_path: Path) -> None:
+    """A failed render removes its transient .srt rather than littering output_dir."""
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    with patch.object(service, "_run", side_effect=CompositionError("ffmpeg exited with code 1")):
+        with pytest.raises(CompositionError):
+            asyncio.run(
+                service.render(
+                    audio=_audio(uri="/tmp/a.wav"),
+                    captions=_captions(),
+                    visual_uris=["/tmp/bg.png"],
+                )
+            )
+    assert list(tmp_path.glob("*.srt")) == []
 
 
 def test_render_echoes_requested_dimensions(tmp_path: Path) -> None:

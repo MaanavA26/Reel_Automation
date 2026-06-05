@@ -39,9 +39,13 @@ from typing import Any
 import httpx
 
 from app.analytics.base import AnalyticsError, VideoStats
+from app.core.lifecycle import CloseOwnedClientMixin
 
 PROVIDER_NAME = "youtube"
 _DEFAULT_BASE_URL = "https://youtubeanalytics.googleapis.com"
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never lands in logs / surfaced errors (info-leak guard, ADR 0043/0044).
+_ERR_BODY_MAX = 500
 # The Analytics API requires a bounded date range. Lifetime-to-date is the
 # natural default for "how has this video performed"; 2005-02-14 is YouTube's
 # launch date, an unambiguous floor that no real upload predates.
@@ -50,7 +54,7 @@ _DEFAULT_START_DATE = "2005-02-14"
 _METRICS = "views,likes,estimatedMinutesWatched,averageViewPercentage"
 
 
-class YouTubeAnalyticsProvider:
+class YouTubeAnalyticsProvider(CloseOwnedClientMixin):
     """An `AnalyticsProvider` over the YouTube Analytics ``reports.query`` API.
 
     The token is an OAuth access token for the channel whose videos are queried;
@@ -79,6 +83,7 @@ class YouTubeAnalyticsProvider:
         self._base_url = base_url.rstrip("/")
         self._start_date = start_date
         self._end_date = end_date
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def fetch_stats(self, *, post_id: str) -> VideoStats:
@@ -123,7 +128,9 @@ def _map_report(data: Any, *, post_id: str) -> VideoStats:
     present-but-mistyped payload is wrapped in `AnalyticsError`.
     """
     if not isinstance(data, dict):
-        raise AnalyticsError(f"unexpected YouTube Analytics response shape: {data!r}")
+        raise AnalyticsError(
+            f"unexpected YouTube Analytics response shape: {repr(data)[:_ERR_BODY_MAX]}"
+        )
 
     headers = data.get("columnHeaders")
     if not isinstance(headers, list):
