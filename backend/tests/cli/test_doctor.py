@@ -33,8 +33,6 @@ def _settings(**overrides: object) -> Settings:
         "api_key": SecretStr("sk-test"),
         "search_provider": "tavily",
         "search_api_key": SecretStr("tvly-test"),
-        "tts_base_url": "https://tts.example.com",
-        "tts_api_key": SecretStr("tts-test"),
         "stock_api_key": SecretStr("pexels-test"),
     }
     base.update(overrides)
@@ -45,6 +43,21 @@ def _settings(**overrides: object) -> Settings:
 def _binaries_present(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: pretend ffmpeg/ffprobe are on PATH so config rows are isolated."""
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+
+@pytest.fixture(autouse=True)
+def _kokoro_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default (kokoro backend): pretend the package + model files are present.
+
+    The doctor's kokoro check is offline — `find_spec` (no import executed) plus a
+    file stat. The default `_settings()` uses the relative ``kokoro-v1.0.onnx`` /
+    ``voices-v1.0.bin`` paths, which don't exist in the test cwd, so both signals
+    are mocked here; individual tests override one to exercise a ✗.
+    """
+    monkeypatch.setattr(
+        doctor.importlib.util, "find_spec", lambda name: object() if "kokoro" in name else None
+    )
+    monkeypatch.setattr(doctor.Path, "is_file", lambda self: True)
 
 
 @pytest.fixture(autouse=True)
@@ -138,16 +151,49 @@ def test_search_unknown_fails() -> None:
     assert "REEL_AUTOMATION_SEARCH_PROVIDER" in row.hint
 
 
-def test_tts_missing_base_url_fails() -> None:
-    row = _row(doctor.run_checks(_settings(tts_base_url="")), "TTS endpoint")
-    assert not row.ok
-    assert "REEL_AUTOMATION_TTS_BASE_URL" in row.hint
+def test_tts_kokoro_default_passes_when_package_and_files_present() -> None:
+    # The autouse fixtures mock find_spec + file presence: the default kokoro
+    # backend is green with no TTS service key (the keystone, doctor-side).
+    row = _row(doctor.run_checks(_settings()), "TTS backend")
+    assert row.ok
 
 
-def test_tts_missing_key_fails() -> None:
-    row = _row(doctor.run_checks(_settings(tts_api_key=SecretStr(""))), "TTS endpoint")
+def test_tts_kokoro_missing_package_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: None)
+    row = _row(doctor.run_checks(_settings()), "TTS backend")
     assert not row.ok
-    assert "REEL_AUTOMATION_TTS_API_KEY" in row.hint
+    assert "pip install kokoro-onnx" in row.hint
+
+
+def test_tts_kokoro_missing_model_files_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.Path, "is_file", lambda self: False)
+    row = _row(doctor.run_checks(_settings()), "TTS backend")
+    assert not row.ok
+    assert "kokoro-v1.0.onnx" in row.hint and "voices-v1.0.bin" in row.hint
+
+
+def test_tts_nvidia_backend_reads_its_key() -> None:
+    missing = _row(doctor.run_checks(_settings(tts_backend="nvidia")), "TTS backend")
+    assert not missing.ok
+    assert "REEL_AUTOMATION_NVIDIA_TTS_API_KEY" in missing.hint
+
+    present = _row(
+        doctor.run_checks(_settings(tts_backend="nvidia", nvidia_tts_api_key=SecretStr("nv-x"))),
+        "TTS backend",
+    )
+    assert present.ok
+
+
+def test_tts_huggingface_backend_reads_its_key() -> None:
+    missing = _row(doctor.run_checks(_settings(tts_backend="huggingface")), "TTS backend")
+    assert not missing.ok
+    assert "REEL_AUTOMATION_HUGGINGFACE_TTS_API_KEY" in missing.hint
+
+
+def test_tts_unknown_backend_fails() -> None:
+    row = _row(doctor.run_checks(_settings(tts_backend="bogus")), "TTS backend")
+    assert not row.ok
+    assert "REEL_AUTOMATION_TTS_BACKEND" in row.hint
 
 
 def test_stock_missing_key_fails() -> None:

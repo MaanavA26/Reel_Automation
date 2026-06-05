@@ -34,12 +34,13 @@ a single paid call.
 | --- | --- | --- |
 | **LLM provider** | research planning, extraction, synthesis, creator packet | `REEL_AUTOMATION_DEFAULT_PROVIDER` + that provider's key (e.g. `…_API_KEY`) |
 | **Search provider** | source discovery for grounded research | `REEL_AUTOMATION_SEARCH_PROVIDER` + that provider's key |
-| **TTS endpoint** | narration audio | `REEL_AUTOMATION_TTS_BASE_URL` + `REEL_AUTOMATION_TTS_API_KEY` |
+| **TTS backend** | narration audio | `REEL_AUTOMATION_TTS_BACKEND=kokoro` (local default — no key) + the Kokoro model files |
 | **Stock B-roll** | ffmpeg needs ≥1 visual to render | `REEL_AUTOMATION_STOCK_API_KEY` |
 | **`ffmpeg` binary** | audio + visuals → MP4 (also provides `ffprobe`) | on your `PATH` |
 
-Three of the four services have a **free tier with no credit card** (Groq, Tavily,
-Pexels). TTS is the one that needs your own endpoint — see
+The default TTS runs **fully locally** (Kokoro on-device — no key, no service):
+all the *paid* services have a **free tier with no credit card** (Groq, Tavily,
+Pexels). TTS just needs a one-time model download — see
 [Step 3](#5-step-3--configure-your-keys-env).
 
 ---
@@ -125,21 +126,23 @@ Brave Search is the alternative (`SEARCH_PROVIDER=brave` + `BRAVE_API_KEY`).
 Get a key at <https://www.pexels.com/api/> and paste it into
 `REEL_AUTOMATION_STOCK_API_KEY`. Required — ffmpeg needs at least one visual.
 
-### TTS — your own endpoint
-The TTS adapter speaks **one generic REST contract**, not a vendor SDK:
+### TTS — local Kokoro (default, no service)
+TTS is a **supervised router** over a local-first fabric (ADR 0050). The default
+backend, **Kokoro**, runs the Apache-2.0 Kokoro-82M model entirely on your machine
+via ONNX Runtime — no TTS service, no key, no per-call cost. One-time setup:
 
-```
-POST {REEL_AUTOMATION_TTS_BASE_URL}/synthesize
-  Authorization: Bearer {REEL_AUTOMATION_TTS_API_KEY}
-  body: {"text": "...", "voice": "..."}
-  -> response body = raw audio bytes; X-Audio-Duration-Ms header = clip length (ms)
+```bash
+cd backend && .venv/bin/pip install kokoro-onnx
+# Download both files from the kokoro-onnx releases and point the paths at them:
+#   https://github.com/thewh1teagle/kokoro-onnx/releases
+#   - kokoro-v1.0.onnx   -> REEL_AUTOMATION_KOKORO_MODEL_PATH
+#   - voices-v1.0.bin    -> REEL_AUTOMATION_KOKORO_VOICES_PATH
 ```
 
-Point `REEL_AUTOMATION_TTS_BASE_URL` + `REEL_AUTOMATION_TTS_API_KEY` at any
-endpoint that speaks this — a hosted TTS that matches it, or a small self-hosted
-shim in front of a free engine (Coqui, Piper, ElevenLabs). This is the one
-service with no drop-in free tier; the contract is documented in
-`backend/.env.example` and ADR 0022.
+Set `REEL_AUTOMATION_TTS_VOICE` to a Kokoro voice id (default `af_heart`).
+Optional NVIDIA/HuggingFace fallbacks join the router only if you set their key
+(`REEL_AUTOMATION_NVIDIA_TTS_API_KEY` / `REEL_AUTOMATION_HUGGINGFACE_TTS_API_KEY`);
+the contract is documented in `backend/.env.example` and ADRs 0046-0050.
 
 ---
 
@@ -153,8 +156,10 @@ make doctor
 ```
 
 It verifies: the configured LLM provider's required key/base_url, the search
-provider's key, TTS base_url + key, the stock key, `ffmpeg` **and** `ffprobe` on
-PATH, and that the output directory exists or can be created. It exits non-zero if
+provider's key, the TTS backend (for `kokoro`: the `kokoro-onnx` package + the
+model/voices files; for `nvidia`/`huggingface`: that backend's key), the stock
+key, `ffmpeg` **and** `ffprobe` on PATH, and that the output directory exists or
+can be created. It exits non-zero if
 any hard requirement is missing — so a green `make doctor` means `make video`
 won't fail for a config reason. (Run it directly if you prefer:
 `cd backend && .venv/bin/python -m app.cli.doctor`.)
@@ -198,8 +203,7 @@ real error to its fix:
 | `search_provider='tavily' requires REEL_AUTOMATION_SEARCH_API_KEY` | set `REEL_AUTOMATION_SEARCH_API_KEY` |
 | `search_provider='brave' requires REEL_AUTOMATION_BRAVE_API_KEY` | set `REEL_AUTOMATION_BRAVE_API_KEY` |
 | `no search provider adapter for search_provider=…` | set `REEL_AUTOMATION_SEARCH_PROVIDER` to `tavily` or `brave` |
-| `media render requires REEL_AUTOMATION_TTS_BASE_URL` | set `REEL_AUTOMATION_TTS_BASE_URL` |
-| `media render requires REEL_AUTOMATION_TTS_API_KEY` | set `REEL_AUTOMATION_TTS_API_KEY` |
+| TTS: `kokoro-onnx` not installed / model files missing | `pip install kokoro-onnx` + download the model + voices files (see Step 3) |
 
 Other failure modes:
 

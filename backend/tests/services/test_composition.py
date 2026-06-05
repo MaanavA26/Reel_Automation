@@ -44,6 +44,17 @@ def _settings(**overrides: object) -> Settings:
     return Settings(**base)  # type: ignore[arg-type]
 
 
+def _wired_tts_backends(tts: object) -> set[str]:
+    """The backend names registered in a supervised TTS provider's router.
+
+    Reaches through the composition root's TTS wiring — supervised wrapper →
+    supervisor → router — to assert which backends were actually wired for a
+    given config (the only externally observable signal of the key-gated router).
+    """
+    supervisor = tts._supervisor  # type: ignore[attr-defined]
+    return set(supervisor._tts_router.available())
+
+
 # --- Model provider selection ------------------------------------------------
 
 
@@ -151,43 +162,56 @@ def test_build_research_deps_unconfigured_model_raises() -> None:
         build_research_deps(_settings(api_key=SecretStr("")))
 
 
-# --- Media deps assembly -----------------------------------------------------
+# --- Media deps assembly (TTS fabric, ADR 0050) ------------------------------
 
 
-def test_build_media_deps_requires_tts_base_url() -> None:
-    with pytest.raises(CompositionError, match="TTS_BASE_URL"):
-        build_media_deps(_settings())
-
-
-def test_build_media_deps_requires_tts_key() -> None:
-    with pytest.raises(CompositionError, match="TTS_API_KEY"):
-        build_media_deps(_settings(tts_base_url="https://tts.example.com"))
-
-
-def test_build_media_deps_builds_seams(tmp_path: object) -> None:
-    bundle = build_media_deps(
-        _settings(
-            tts_base_url="https://tts.example.com",
-            tts_api_key=SecretStr("tts-key"),
-            media_output_dir=str(tmp_path),
-        )
-    )
+def test_build_media_deps_kokoro_only_builds_with_no_tts_service_key(tmp_path: object) -> None:
+    # The keystone: a Kokoro-only setup (no NVIDIA/HF/OpenAI TTS key) builds. TTS
+    # no longer hard-requires a service account — the local default needs only the
+    # (lazily-read) model files.
+    bundle = build_media_deps(_settings(media_output_dir=str(tmp_path)))
     deps = bundle.deps
     assert isinstance(deps, MediaDeps)
-    assert deps.tts.name == "http"
+    # The pipeline consumes a single TTSProvider — the supervised-router wrapper.
+    assert deps.tts.name == "supervised"
     assert deps.composition.name == "ffmpeg"
     # No stock key configured -> no visual provider wired (live render would then
     # fail loud in ffmpeg, the honest behavior).
     assert deps.visuals is None
-    # Only the TTS provider owns a client to close (no stock key) (ADR 0044).
+    # Only the model client (the TTS supervisor's) is closable — Kokoro owns none.
     assert len(bundle.closables) == 1
+    assert all(hasattr(c, "aclose") for c in bundle.closables)
+
+
+def test_build_media_deps_requires_model_for_tts_supervisor() -> None:
+    # The TTS supervisor needs a ModelRouter, so an unconfigured model fails loud.
+    with pytest.raises(CompositionError):
+        build_media_deps(_settings(api_key=SecretStr("")))
+
+
+def test_tts_router_adds_fallbacks_only_when_their_key_set(tmp_path: object) -> None:
+    # Kokoro-only -> the router registers just kokoro and owns no httpx client.
+    kokoro_only = build_media_deps(_settings(media_output_dir=str(tmp_path)))
+    assert _wired_tts_backends(kokoro_only.deps.tts) == {"kokoro"}
+
+    # Set the NVIDIA + HF TTS keys -> both join the router (cheapest-first), and
+    # each contributes one composition-owned httpx client to the closables.
+    with_fallbacks = build_media_deps(
+        _settings(
+            media_output_dir=str(tmp_path),
+            nvidia_tts_api_key=SecretStr("nvapi-x"),
+            huggingface_tts_api_key=SecretStr("hf-x"),
+        )
+    )
+    assert _wired_tts_backends(with_fallbacks.deps.tts) == {"kokoro", "nvidia", "huggingface"}
+    # model client + nvidia client + hf client = 3 closables (no stock key).
+    assert len(with_fallbacks.closables) == 3
+    assert all(hasattr(c, "aclose") for c in with_fallbacks.closables)
 
 
 def test_build_media_deps_wires_stock_visuals_and_sink_when_key_set(tmp_path: object) -> None:
     bundle = build_media_deps(
         _settings(
-            tts_base_url="https://tts.example.com",
-            tts_api_key=SecretStr("tts-key"),
             stock_api_key=SecretStr("pexels-key"),
             media_output_dir=str(tmp_path),
         )
@@ -198,18 +222,12 @@ def test_build_media_deps_wires_stock_visuals_and_sink_when_key_set(tmp_path: ob
     # The sink is wired alongside the provider so the live render can bridge the
     # provider's remote https uris to local file:// uris ffmpeg can resolve.
     assert deps.visual_sink is not None
-    # Both TTS and stock visuals own clients to close (ADR 0044).
+    # model client + stock visuals = 2 closables (Kokoro-only TTS, no fallbacks).
     assert len(bundle.closables) == 2
 
 
 def test_no_stock_key_wires_neither_visuals_nor_sink(tmp_path: object) -> None:
-    deps = build_media_deps(
-        _settings(
-            tts_base_url="https://tts.example.com",
-            tts_api_key=SecretStr("tts-key"),
-            media_output_dir=str(tmp_path),
-        )
-    ).deps
+    deps = build_media_deps(_settings(media_output_dir=str(tmp_path))).deps
     assert deps.visuals is None
     assert deps.visual_sink is None
 

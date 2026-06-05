@@ -277,6 +277,16 @@
     default if invalid, then executed via the router. Agent proposes, router disposes + guarantees delivery.
     Hermetic (`FakeTTSProvider`/`FakeProvider`, one failing); binds to the protocol so the sibling adapters
     drop in. Capability only — not yet wired into `MediaPipeline`. [ADR 0049](adrs/0049-tts-fabric-supervisor.md).
+  - ✅ **TTS fabric wired — local-first (Kokoro) default.** `build_media_deps` (`services/composition.py`)
+    now assembles the supervised router: `KokoroTtsProvider` is **always** registered (no key — only the
+    model files, whose paths default to non-empty filenames so it constructs unconditionally), nvidia/hf
+    join **only when keyed** (cheapest-first), wrapped in `TTSSupervisorAgent` and exposed to the pipeline
+    via a thin `SupervisedTtsProvider` (`media/tts/supervised.py`) that keeps the `TTSProvider` contract
+    unchanged. **A Kokoro-only setup (no TTS service key) builds + renders.** Composition root owns the
+    nvidia/hf httpx clients (they expose no `aclose`) and registers them in `closables`. Config additive
+    (`tts_backend`/`kokoro_*`/`*_tts_*`; old `tts_base_url`/`tts_api_key` removed); doctor branches on
+    `tts_backend` offline (kokoro: `find_spec` + model-file stat + install/download hint); `.env.example`
+    defaults to no-service Kokoro. OpenAI-TTS left wire-ready/unwired (§7). [ADR 0050](adrs/0050-tts-fabric-wiring.md).
   - ✅ **Visual / B-roll retrieval seam.** `backend/app/media/visuals/` — the retrieval half of the
     §3.3 "image/video retrieval" responsibility ADR 0019 deferred (the `visual_uris` producer for
     `CompositionService.render`). A `VisualProvider` protocol + a `VisualClip` DTO (`vis_`,
