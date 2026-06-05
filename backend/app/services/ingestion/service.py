@@ -10,6 +10,7 @@ discovery agent. WEB landed in M6 (ADR 0008); PDF in M-LP (ADR 0014).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.schemas.research_state import Chunk, Source, SourceType
@@ -68,10 +69,17 @@ class IngestionService:
             try:
                 if source.type is SourceType.WEB:
                     fetched = await self._fetch.fetch(url=source.url)
-                    text = parse_html(fetched.content, fetched.content_type)
+                    # parse_html is synchronous + CPU-bound; offload it to a worker
+                    # thread so a large parse never blocks the event loop (and stalls
+                    # other research jobs / status polls / health). Exceptions raised
+                    # in the thread re-raise here, so the except block still catches.
+                    text = await asyncio.to_thread(
+                        parse_html, fetched.content, fetched.content_type
+                    )
                 elif source.type is SourceType.PDF:
                     fetched = await self._fetch.fetch(url=source.url)
-                    text = self._pdf_parser.parse(fetched.content)
+                    # PdfParser.parse is synchronous + CPU-bound — offload it too.
+                    text = await asyncio.to_thread(self._pdf_parser.parse, fetched.content)
                 elif source.type is SourceType.YOUTUBE and self._transcript is not None:
                     segments = await self._transcript.fetch(url=source.url)
                     text = normalize_transcript(segments)
