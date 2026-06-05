@@ -4,10 +4,11 @@ These tests assert the *state-threading contract* every node depends on:
 lifecycle transitions, job-identity stability, that list-channel writes survive
 the merge, that the final state re-validates under the strict schema, and that
 the real ``plan`` (M3) / ``acquire`` (M5) / ``ingest`` (M6) / ``extract`` (M7) /
-``verify`` (M8) nodes populate state end-to-end. They run the real compiled graph
-with `FakeProvider`-backed agents + fakes (hermetic — no network) and drive the
-async entrypoint with ``asyncio.run`` (no ``pytest-asyncio`` dependency required).
-Dependencies are injected as a single `ResearchDeps` bundle (ADR 0009).
+``verify`` (M8) / ``synthesize`` (M9) nodes populate state end-to-end. They run
+the real compiled graph with `FakeProvider`-backed agents + fakes (hermetic — no
+network) and drive the async entrypoint with ``asyncio.run`` (no
+``pytest-asyncio`` dependency required). Dependencies are injected as a single
+`ResearchDeps` bundle (ADR 0009).
 """
 
 from __future__ import annotations
@@ -33,6 +34,11 @@ from app.agents.source_discovery import (
     SourceDiscoveryAgent,
     _DiscoveryOutput,
     _DiscoveryQuery,
+)
+from app.agents.synthesis import (
+    SynthesisAgent,
+    _FindingDraft,
+    _SynthesisOutput,
 )
 from app.schemas.research_state import JobStatus, ResearchState, SourceType, SupportLevel
 from app.services.ingestion.base import FetchedContent
@@ -129,6 +135,18 @@ def _verifier() -> CrossVerificationAgent:
     return CrossVerificationAgent(router)
 
 
+def _synthesizer() -> SynthesisAgent:
+    """Synthesis agent: scripts one finding citing the first verdict + sub-question."""
+    output = _SynthesisOutput(
+        findings=[_FindingDraft(statement="finding", supporting_verdicts=[0], sub_questions=[0])]
+    )
+    router = ModelRouter(
+        providers={"fake": FakeProvider([output])},
+        policy={ModelRole.LONG_CONTEXT: ModelChoice("fake", "long-context-model")},
+    )
+    return SynthesisAgent(router)
+
+
 def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> ResearchDeps:
     return ResearchDeps(
         planner=planner or _planner(),
@@ -136,6 +154,7 @@ def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> Re
         ingestion=_ingestion(n_sources),
         extractor=_extractor(n_sources),
         verifier=_verifier(),
+        synthesizer=_synthesizer(),
     )
 
 
@@ -212,6 +231,15 @@ def test_verify_node_populates_verdicts() -> None:
     assert vd.verified_via.startswith("verification:")
 
 
+def test_synthesize_node_populates_findings() -> None:
+    # M9: the synthesize node composes verdicts into reasoning.synthesis findings.
+    final = _run()
+    assert final.reasoning.synthesis.findings, "synthesize node produced no findings"
+    f = final.reasoning.synthesis.findings[0]
+    assert f.supporting_verdict_ids
+    assert f.synthesized_via.startswith("synthesis:")
+
+
 def test_mixed_source_types_only_web_ingested() -> None:
     # M6: discovery yields a WEB and a PDF source; v1 ingests only WEB, skips the
     # PDF, and the job still COMPLETES (no crash on the unsupported type).
@@ -236,6 +264,7 @@ def test_mixed_source_types_only_web_ingested() -> None:
         ),
         extractor=_extractor(1),
         verifier=_verifier(),
+        synthesizer=_synthesizer(),
     )
     final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
     assert final.status is JobStatus.COMPLETED
