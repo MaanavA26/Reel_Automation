@@ -28,6 +28,11 @@ from __future__ import annotations
 
 import asyncio
 
+from app.agents.creator_packet import (
+    CreatorPacketAgent,
+    _HookDraft,
+    _PacketOutput,
+)
 from app.agents.cross_verification import (
     CrossVerificationAgent,
     _VerdictDraft,
@@ -185,6 +190,16 @@ def _reporter() -> ReportAgent:
     )
 
 
+def _strategist() -> CreatorPacketAgent:
+    output = _PacketOutput(hooks=[_HookDraft(text="hook", findings=[0])])
+    return CreatorPacketAgent(
+        ModelRouter(
+            providers={"fake": FakeProvider([output])},
+            policy={ModelRole.LONG_CONTEXT: ModelChoice("fake", "fake-model")},
+        )
+    )
+
+
 def _deps(n_sources: int = 2) -> ResearchDeps:
     return ResearchDeps(
         planner=_planner(),
@@ -195,6 +210,7 @@ def _deps(n_sources: int = 2) -> ResearchDeps:
         synthesizer=_synthesizer(),
         critic=_critic(),
         reporter=_reporter(),
+        strategist=_strategist(),
     )
 
 
@@ -356,6 +372,7 @@ def _loop_deps(
             )
         ),
         reporter=_reporter(),
+        strategist=_strategist(),
     )
 
 

@@ -10,6 +10,7 @@ dependencies = [
     "langgraph>=1.0,<2.0",
     "pydantic>=2.0,<3.0",
     "pydantic-settings>=2.0,<3.0",
+    "pypdf>=5.0,<6.0",  # pure-Python PDF text extraction (ADR 0014)
     "python-dotenv>=1.0,<2.0",
     "uvicorn[standard]>=0.30,<1.0",
 ]
@@ -58,6 +59,13 @@ disallow_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unused_configs = true
+
+# pypdf is lazily imported and may be absent in the offline build sandbox; allow
+# mypy to type-check the rest of the module without its stubs (ADR 0014). pypdf
+# ships ``py.typed``, so when installed this override is a harmless no-op.
+[[tool.mypy.overrides]]
+module = "pypdf"
+ignore_missing_imports = true
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

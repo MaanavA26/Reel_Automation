@@ -37,3 +37,21 @@ class FetchProvider(Protocol):
     name: str
 
     async def fetch(self, *, url: str) -> FetchedContent: ...
+
+
+@runtime_checkable
+class PdfParser(Protocol):
+    """A pure, synchronous PDF-bytes → normalized-text extractor.
+
+    The second parser behind the ingestion seam (ADR 0014), alongside the stdlib
+    `parse_html`. Per CLAUDE.md §4 this is deterministic *tool* work (no LLM):
+    extract the text layer of a PDF and normalize it. Implementations raise
+    `app.services.ingestion.parser.ParseError` when the bytes cannot be parsed
+    (corrupt, encrypted, or — for the text-only v1 — an image-only/scanned PDF
+    whose text must wait for the deferred OCR path). Synchronous because parsing
+    is CPU-bound; the network I/O stays in `FetchProvider`.
+    """
+
+    name: str
+
+    def parse(self, content: bytes) -> str: ...
