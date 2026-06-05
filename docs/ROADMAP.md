@@ -114,6 +114,12 @@
   - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
+  - ✅ **M-LP.4 (PDF ingestion):** second parser behind the ingestion seam — a `PdfParser`
+    protocol + `pypdf`-backed `PypdfParser` (lazy import, offline-safe to construct) +
+    `FakePdfParser`, routed for `SourceType.PDF` in `IngestionService`; content-type allowlist
+    widened to `application/pdf`. Text-layer only; scanned/image-only PDFs (OCR) stay deferred.
+    `Chunk.parsed_via` reconsidered and re-deferred to a dedicated schema PR (ADR 0008's gate).
+    `pypdf` added to deps. [ADR 0014](adrs/0014-pdf-ingestion.md).
 
 ---
 *Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
