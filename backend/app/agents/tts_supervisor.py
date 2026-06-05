@@ -100,6 +100,7 @@ class TTSSupervisorAgent:
         text: str,
         voice_hint: str | None = None,
         tone_hint: str | None = None,
+        avoid_backends: Iterable[str] = (),
     ) -> SupervisedSpeech:
         """Choose a backend + voice for ``text`` and synthesize it (with fallback).
 
@@ -107,11 +108,20 @@ class TTSSupervisorAgent:
         validates/clamps the choice, then delegates to `TTSRouter.synthesize`,
         which guarantees audio via ordered fallback. Returns the produced speech
         together with the `TTSDecision` provenance.
+
+        ``avoid_backends`` is an optional set of backend names a prior attempt
+        already produced unsatisfactory audio with (the QA re-synthesis loop of
+        ADR 0052 passes the backends it has tried). It is threaded into the prompt
+        as guidance so the model picks *differently* on a retry — steering the
+        judgment, not constraining the router. It is advisory only: the model may
+        still re-pick an avoided backend (and the deterministic fallback may land
+        on one regardless), so this never narrows the router's real options. The
+        default empty set preserves the original single-shot behavior exactly.
         """
         available = self._tts_router.available()
         choice = await self._model_router.for_role(ModelRole.PLANNING).complete_structured(
             system=SYSTEM_PROMPT,
-            prompt=self._build_prompt(text, available, voice_hint, tone_hint),
+            prompt=self._build_prompt(text, available, voice_hint, tone_hint, avoid_backends),
             schema=_SupervisorChoice,
         )
         decision = self._validate(choice)
@@ -143,6 +153,7 @@ class TTSSupervisorAgent:
         available: Iterable[str],
         voice_hint: str | None,
         tone_hint: str | None,
+        avoid_backends: Iterable[str] = (),
     ) -> str:
         backends = ", ".join(sorted(available))
         hint_lines = []
@@ -150,6 +161,15 @@ class TTSSupervisorAgent:
             hint_lines.append(f"Preferred channel voice hint: {voice_hint}")
         if tone_hint:
             hint_lines.append(f"Desired narrative tone: {tone_hint}")
+        avoid = sorted(set(avoid_backends))
+        if avoid:
+            # Advisory steer for a QA retry: name the backends a prior attempt
+            # produced unsatisfactory audio with so the model picks differently.
+            # Not a hard constraint — the router's real option set is unchanged.
+            hint_lines.append(
+                "A previous attempt produced unsatisfactory audio with backend(s): "
+                f"{', '.join(avoid)}. Prefer a different backend and/or voice this time."
+            )
         hints = ("\n".join(hint_lines) + "\n\n") if hint_lines else ""
         return (
             f"Available TTS backends: {backends}\n\n"
