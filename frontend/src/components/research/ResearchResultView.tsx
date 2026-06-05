@@ -2,9 +2,11 @@ import type { ReactElement } from "react";
 
 import type { ResearchResult } from "../../types/research";
 
+import { CreatorPacketView } from "./CreatorPacketView";
 import { CritiqueView } from "./CritiqueView";
 import { FindingsView } from "./FindingsView";
 import { PlanView } from "./PlanView";
+import { ReportView } from "./ReportView";
 import { SourcesView } from "./SourcesView";
 
 interface ResearchResultViewProps {
@@ -12,13 +14,19 @@ interface ResearchResultViewProps {
 }
 
 /**
- * Composes the four rendered sections of a `ResearchState` (plan, sources,
- * findings, critique). Pure presentation — it receives a fully-resolved result
- * and never touches the service layer (CLAUDE.md §10).
+ * Composes the rendered sections of a `ResearchState`: the reasoning surface
+ * (plan, sources, findings, critique) followed by the publishing surface
+ * (report, creator packet) when present. A job is single-report / single-packet,
+ * so the publishing lists are read defensively at index 0 — an empty list is the
+ * "publishing band has not run" signal. Pure presentation — it receives a
+ * fully-resolved result and never touches the service layer (CLAUDE.md §10).
  */
 export function ResearchResultView({
   result,
 }: ResearchResultViewProps): ReactElement {
+  const report = result.publishing.reports[0];
+  const packet = result.publishing.packets[0];
+
   return (
     <div className="research-result">
       <header className="research-result__header">
@@ -41,6 +49,8 @@ export function ResearchResultView({
         critiques={result.reasoning.critiques}
         subQuestions={result.plan.sub_questions}
       />
+      {report ? <ReportView report={report} /> : null}
+      {packet ? <CreatorPacketView packet={packet} /> : null}
     </div>
   );
 }
