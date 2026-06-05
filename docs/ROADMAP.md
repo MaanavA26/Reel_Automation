@@ -156,6 +156,13 @@
     `ResearchState` (job id = `state.id`); held as a process-singleton on `app.state`. The sync `POST
     /research` endpoint is kept. **Single-process, non-durable by design** — durable/cross-worker store,
     streaming progress, and `CANCELLED` deferred. [ADR 0031](adrs/0031-async-job-store.md).
+  - 🔨 **M13 (client SDK):** typed Python client (`backend/app/client/`) + runnable `examples/`. A
+    synchronous `httpx`-based `ReelAutomationClient` wrapping the four real endpoints
+    (`health`/`submit_research`/`enqueue_job`/`get_job`), importing the server's `ResearchJobRequest` /
+    `ResearchState` / `HealthResponse` so it stays in lockstep with the contract; `base_url` at
+    construction, bounded generous timeout, typed `ReelAutomationAPIError` (status + parsed `detail`),
+    injectable transport. Fully offline-tested via `httpx.MockTransport`; `examples/` are illustrative
+    (not in CI). No `config.py`/`main.py`/`pyproject.toml`/`app/api/` change (client + examples only).
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
