@@ -366,3 +366,37 @@ def test_blank_narrative_surfaces_media_error() -> None:
     pipeline = VideoPipeline(_research_deps(_strategist("   \n  \n")), _media_deps())
     with pytest.raises(MediaPipelineError, match="no narratable script segments"):
         asyncio.run(pipeline.create("topic"))
+
+
+# --- The keystone wiring (ADR 0050): live construction with a Kokoro-only TTS --
+
+
+def test_build_video_pipeline_constructs_with_kokoro_only_no_tts_service_key() -> None:
+    """The integration keystone: with LLM + search + stock configured but NO TTS
+    service key, `build_video_pipeline` constructs (the local Kokoro default needs
+    no account). Construction is offline — Kokoro loads the model lazily at synth
+    time — so this never touches the network or the model files.
+    """
+    from pydantic import SecretStr
+
+    from app.core.config import Settings
+    from app.services.video import build_video_pipeline
+
+    settings = Settings(  # type: ignore[call-arg]
+        default_provider="openai-compatible",
+        base_url="https://api.example.com/v1",
+        api_key=SecretStr("sk-test"),
+        search_provider="tavily",
+        search_api_key=SecretStr("tvly-test"),
+        stock_api_key=SecretStr("pexels-test"),
+        tts_backend="kokoro",
+        # No NVIDIA/HF/OpenAI TTS key set — Kokoro-only.
+    )
+    bundle = build_video_pipeline(settings)
+    assert isinstance(bundle.pipeline, VideoPipeline)
+    # The supervised TTS router actually reached the pipeline (no service key).
+    assert bundle.pipeline._media_deps.tts.name == "supervised"
+    # research model+search+fetch (3) + media model (1) + stock visuals (1) = 5;
+    # Kokoro owns no client, so it adds nothing. Every closable can be drained.
+    assert len(bundle.closables) == 5
+    assert all(hasattr(c, "aclose") for c in bundle.closables)

@@ -50,12 +50,17 @@ from app.agents.report import ReportAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
 from app.agents.synthesis import SynthesisAgent
+from app.agents.tts_supervisor import TTSSupervisorAgent
 from app.core.config import Settings, get_settings
 from app.core.lifecycle import AsyncClosable
 from app.media.composition.base import CompositionService
 from app.media.composition.ffmpeg import FfmpegCompositionService
 from app.media.tts.base import TTSProvider
-from app.media.tts.http_tts import HttpTtsProvider
+from app.media.tts.huggingface import HuggingFaceTtsProvider
+from app.media.tts.kokoro import KokoroTtsProvider
+from app.media.tts.nvidia import NvidiaTtsProvider
+from app.media.tts.router import TTSRouter
+from app.media.tts.supervised import SupervisedTtsProvider
 from app.media.visuals.base import VisualProvider
 from app.media.visuals.stock import StockVisualProvider
 from app.services.ingestion.httpx_fetch import HttpxFetchProvider
@@ -294,25 +299,112 @@ class MediaDeps:
 class MediaBundle:
     """A built `MediaDeps` plus the httpx-owning media providers to close on shutdown.
 
-    The media-band analogue of `ResearchBundle` (ADR 0044): the TTS provider — and
-    the stock visual provider when configured — own httpx clients that the app
-    closes on shutdown. ``FfmpegCompositionService`` shells out to a binary and
-    owns no client, so it is not a closable.
+    The media-band analogue of `ResearchBundle` (ADR 0044): the model client the
+    TTS supervisor uses, the httpx clients the wired NVIDIA/HuggingFace TTS
+    fallbacks use (owned by the composition root, not the adapters — ADR 0050),
+    and the stock visual provider when configured all own clients the app closes
+    on shutdown. The local Kokoro backend and ``FfmpegCompositionService`` own no
+    client, so they are not closables.
     """
 
     deps: MediaDeps
     closables: tuple[AsyncClosable, ...]
 
 
+#: TTS fallback policy (ADR 0050): cheapest/most-local first. The router walks
+#: this order on failure, and its head is the `default_backend` the supervisor
+#: clamps an out-of-set model choice to. Kokoro is always present (local, no
+#: key); nvidia/huggingface join only when their key is set, so the *registered*
+#: order is this list intersected with what was wired.
+_TTS_FALLBACK_ORDER: tuple[str, ...] = (
+    KokoroTtsProvider.name,
+    NvidiaTtsProvider.name,
+    HuggingFaceTtsProvider.name,
+)
+
+
+def _build_tts_provider(
+    settings: Settings,
+    *,
+    model_router: ModelRouter,
+    audio_sink: Callable[[bytes], str],
+    closables: list[AsyncClosable],
+) -> TTSProvider:
+    """Assemble the supervised TTS router the media pipeline consumes (ADR 0050).
+
+    Builds a `TTSRouter` whose backends are config-gated:
+
+    * **Kokoro** (local ONNX, no key) is *always* registered — this is what makes
+      a Kokoro-only setup render with no TTS service account. It needs only the
+      two model files; their paths default to non-empty filenames so the provider
+      *constructs* unconditionally (the files are read lazily at synth time, and
+      the doctor checks their presence).
+    * **NVIDIA** / **HuggingFace** join the router *only when their key is set* —
+      so a missing fallback key is silent (the local default still delivers),
+      never a `CompositionError`. Each owns an `httpx.AsyncClient`; those adapters
+      do not expose ``aclose``, so the composition root *owns* the client (injects
+      it, then registers the client itself — which satisfies `AsyncClosable` — in
+      ``closables`` for the lifespan to drain). Kokoro owns no client.
+
+    The router is wrapped in a `TTSSupervisorAgent` (the §4 judgment seam: the
+    ``PLANNING`` model picks the backend/voice; the router guarantees delivery via
+    ordered fallback) and exposed to the pipeline as a plain `TTSProvider` via
+    `SupervisedTtsProvider` — so the pipeline's ``tts.synthesize`` contract is
+    unchanged. Note ``tts_backend`` is **not** read here: it only selects the
+    doctor's readiness row. At render time the supervisor chooses per beat among
+    all wired backends, and the router's policy head (always Kokoro) is both the
+    default and the fallback — so the local backend always guarantees output.
+    """
+    # httpx clients the adapters use; the composition root owns + closes them
+    # (the adapters expose no aclose). The default timeout matches each adapter's
+    # own (60s) so injecting a client does not silently change request behavior.
+    providers: dict[str, TTSProvider] = {
+        KokoroTtsProvider.name: KokoroTtsProvider(
+            model_path=settings.kokoro_model_path,
+            voices_path=settings.kokoro_voices_path,
+            sink=audio_sink,
+            voice=settings.tts_voice,
+        )
+    }
+    if settings.nvidia_tts_api_key.get_secret_value():
+        nvidia_client = httpx.AsyncClient(timeout=60.0)
+        providers[NvidiaTtsProvider.name] = NvidiaTtsProvider(
+            base_url=settings.nvidia_tts_base_url,
+            api_key=settings.nvidia_tts_api_key.get_secret_value(),
+            sink=audio_sink,
+            model=settings.nvidia_tts_model,
+            client=nvidia_client,
+        )
+        closables.append(nvidia_client)
+    if settings.huggingface_tts_api_key.get_secret_value():
+        hf_client = httpx.AsyncClient(timeout=60.0)
+        providers[HuggingFaceTtsProvider.name] = HuggingFaceTtsProvider(
+            model=settings.huggingface_tts_model,
+            token=settings.huggingface_tts_api_key.get_secret_value(),
+            sink=audio_sink,
+            client=hf_client,
+        )
+        closables.append(hf_client)
+
+    # Register only the backends actually wired, in cheapest-first policy order.
+    fallback_order = tuple(name for name in _TTS_FALLBACK_ORDER if name in providers)
+    router = TTSRouter(providers=providers, fallback_order=fallback_order)
+    supervisor = TTSSupervisorAgent(model_router, router)
+    return SupervisedTtsProvider(supervisor)
+
+
 def build_media_deps(settings: Settings | None = None) -> MediaBundle:
-    """Assemble the live `MediaDeps` bundle (+ its closables) from settings (ADR 0032).
+    """Assemble the live `MediaDeps` bundle (+ its closables) from settings (ADR 0050).
 
     Wires the real media seams for an end-to-end render:
 
-    * `HttpTtsProvider` over the configured ``tts_base_url`` + ``tts_api_key``,
-      with a **filesystem sink** that writes the synthesized audio under
-      ``media_output_dir`` and returns a ``file://`` URI — the scheme the ffmpeg
-      adapter can resolve (it rejects ``http``/``fake`` schemes).
+    * A **supervised TTS router** (`_build_tts_provider`): a `TTSRouter` over the
+      local-default `KokoroTtsProvider` plus any configured NVIDIA/HuggingFace
+      fallbacks, wrapped in a `TTSSupervisorAgent` and presented to the pipeline as
+      a `TTSProvider`. Critically, a **Kokoro-only setup (no TTS service key)
+      builds** — TTS no longer hard-requires a service account. A **filesystem
+      audio sink** writes synthesized audio under ``media_output_dir`` and returns
+      a ``file://`` URI (the scheme the ffmpeg adapter resolves).
     * `FfmpegCompositionService` writing into ``media_output_dir`` (ADR 0023).
     * `StockVisualProvider` (ADR 0024) **and** a `visual_sink` when
       ``stock_api_key`` is set: the provider mints remote ``https`` B-roll uris,
@@ -322,17 +414,16 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
       stock key is set; a live render then has no visual and fails loudly in
       ffmpeg (the honest behavior, not a silent default).
 
-    A missing TTS endpoint/key surfaces as `CompositionError`. This live path is
-    config + ffmpeg-binary + network gated; the hermetic tests inject a
-    fake-backed `MediaDeps` directly and never reach here.
+    The TTS supervisor needs a `ModelRouter` (the §4 judgment seam), so this
+    builder mints its own (via `_build_router`) — an unconfigured model backend
+    surfaces as a loud `CompositionError`. That router is independent of the one
+    `build_research_deps` builds; the end-to-end path therefore holds two model
+    clients (a small, documented cost — ADR 0050 — for keeping the media build
+    self-contained and `build_research_deps` untouched). This live path is config
+    + ffmpeg-binary + network gated; the hermetic tests inject a fake-backed
+    `MediaDeps` directly and never reach here.
     """
     resolved = settings or get_settings()
-
-    if not resolved.tts_base_url:
-        raise CompositionError("media render requires REEL_AUTOMATION_TTS_BASE_URL")
-    tts_key = resolved.tts_api_key.get_secret_value()
-    if not tts_key:
-        raise CompositionError("media render requires REEL_AUTOMATION_TTS_API_KEY")
 
     output_dir = Path(resolved.media_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -345,12 +436,19 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
         path.write_bytes(audio_bytes)
         return path.resolve().as_uri()
 
-    tts = HttpTtsProvider(base_url=resolved.tts_base_url, api_key=tts_key, sink=_audio_sink)
+    closables: list[AsyncClosable] = []
+    model_router, model_provider = _build_router(resolved)
+    closables.append(cast(AsyncClosable, model_provider))
+    tts = _build_tts_provider(
+        resolved,
+        model_router=model_router,
+        audio_sink=_audio_sink,
+        closables=closables,
+    )
     composition = FfmpegCompositionService(output_dir=output_dir)
 
     visuals: VisualProvider | None = None
     visual_sink: VisualSink | None = None
-    closables: list[AsyncClosable] = [tts]
     if resolved.stock_api_key.get_secret_value():
         stock = StockVisualProvider(api_key=resolved.stock_api_key.get_secret_value())
         visuals = stock

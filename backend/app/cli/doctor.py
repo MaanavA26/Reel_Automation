@@ -31,6 +31,7 @@ Exit code: ``1`` if any hard requirement is missing, else ``0``.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import sys
 from collections.abc import Callable
@@ -38,11 +39,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import Settings
+from app.media.tts.huggingface import PROVIDER_NAME as HUGGINGFACE_TTS
+from app.media.tts.kokoro import PIP_PACKAGE as KOKORO_PIP_PACKAGE
+from app.media.tts.kokoro import PROVIDER_NAME as KOKORO_TTS
+from app.media.tts.nvidia import PROVIDER_NAME as NVIDIA_TTS
 from app.services.llm.gemini import GeminiProvider
 from app.services.llm.openai_compatible import OpenAICompatibleProvider
 from app.services.llm.providers import PROVIDER_REGISTRY
 from app.services.search.brave_search import BraveSearchProvider
 from app.services.search.live import TavilySearchProvider
+
+#: The importable module name of the Kokoro ONNX runtime (the package installs as
+#: ``kokoro-onnx`` but imports as ``kokoro_onnx`` — see `app.media.tts.kokoro`).
+_KOKORO_IMPORT_NAME = "kokoro_onnx"
 
 
 @dataclass(frozen=True)
@@ -146,16 +155,58 @@ def _check_search_provider(settings: Settings) -> CheckResult:
 
 
 def _check_tts(settings: Settings) -> CheckResult:
-    """Hard: is TTS configured (base_url + key)?
+    """Hard: is the configured TTS backend ready (ADR 0050)?
 
-    Mirrors the two `composition.build_media_deps` guards for the live render.
+    Branches on ``tts_backend`` (the supervisor's preferred backend), mirroring
+    `composition._build_tts_provider`:
+
+    * ``kokoro`` (the local default) — the ``kokoro-onnx`` package must be
+      importable **and** the configured model + voices files must exist on disk.
+      Detection is offline: `importlib.util.find_spec` does not execute the
+      module, and the file check is a stat. The hint names the ``pip install`` and
+      the download (the doctor never downloads — it detects + instructs).
+    * ``nvidia`` / ``huggingface`` — the backend's key must be set.
+
+    Note: ``tts_backend`` only selects *which backend this row checks*. The live
+    router always registers Kokoro (and any keyed nvidia/hf), and the supervisor
+    chooses per beat among them — so a green ``nvidia``/``huggingface`` row means
+    that backend is ready, not that it is the only one wired.
     """
-    label = "TTS endpoint"
-    if not settings.tts_base_url:
-        return CheckResult(label, False, "set REEL_AUTOMATION_TTS_BASE_URL")
-    if not settings.tts_api_key.get_secret_value():
-        return CheckResult(label, False, "set REEL_AUTOMATION_TTS_API_KEY")
-    return CheckResult(label, True)
+    backend = settings.tts_backend
+    label = f"TTS backend ({backend})"
+
+    if backend == KOKORO_TTS:
+        if importlib.util.find_spec(_KOKORO_IMPORT_NAME) is None:
+            return CheckResult(
+                label,
+                False,
+                f"pip install {KOKORO_PIP_PACKAGE} "
+                "(then download kokoro-v1.0.onnx + voices-v1.0.bin)",
+            )
+        model = Path(settings.kokoro_model_path)
+        voices = Path(settings.kokoro_voices_path)
+        missing = [str(p) for p in (model, voices) if not p.is_file()]
+        if missing:
+            return CheckResult(
+                label,
+                False,
+                "download the Kokoro model files (https://github.com/thewh1teagle/kokoro-onnx "
+                f"releases) to: {', '.join(missing)}",
+            )
+        return CheckResult(label, True)
+
+    if backend == NVIDIA_TTS:
+        if not settings.nvidia_tts_api_key.get_secret_value():
+            return CheckResult(label, False, "set REEL_AUTOMATION_NVIDIA_TTS_API_KEY")
+        return CheckResult(label, True)
+
+    if backend == HUGGINGFACE_TTS:
+        if not settings.huggingface_tts_api_key.get_secret_value():
+            return CheckResult(label, False, "set REEL_AUTOMATION_HUGGINGFACE_TTS_API_KEY")
+        return CheckResult(label, True)
+
+    known = ", ".join((KOKORO_TTS, NVIDIA_TTS, HUGGINGFACE_TTS))
+    return CheckResult(label, False, f"set REEL_AUTOMATION_TTS_BACKEND to one of: {known}")
 
 
 def _check_stock(settings: Settings) -> CheckResult:

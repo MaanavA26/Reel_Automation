@@ -77,19 +77,48 @@ class Settings(BaseSettings):
     nvidia_api_key: SecretStr = SecretStr("")
     huggingface_api_key: SecretStr = SecretStr("")
 
-    # Media production fabric (ADR 0032): the end-to-end video pipeline's
-    # deterministic media seams. The TTS adapter (`HttpTtsProvider`) speaks a
-    # generic REST endpoint selected by base_url + key; the stock visual adapter
-    # (`StockVisualProvider`, ADR 0024) needs its own key. All SecretStr so they
-    # never leak into logs/reprs; empty by default — set the ones you use for a
-    # live render. Composition shells out to the `ffmpeg` binary (ADR 0023), which
-    # is required for a live render but not for the hermetic fake-backed path.
-    tts_base_url: str = ""
-    tts_api_key: SecretStr = SecretStr("")
-    tts_voice: str = "narrator"
+    # Media production fabric (ADR 0032 / 0050): the end-to-end video pipeline's
+    # deterministic media seams. The stock visual adapter (`StockVisualProvider`,
+    # ADR 0024) needs its own key. All SecretStr so keys never leak into
+    # logs/reprs; empty by default — set the ones you use for a live render.
+    # Composition shells out to the `ffmpeg` binary (ADR 0023), which is required
+    # for a live render but not for the hermetic fake-backed path.
+    tts_voice: str = "af_heart"
     stock_api_key: SecretStr = SecretStr("")
     # Where rendered audio + video artifacts are written by the live media seams.
     media_output_dir: str = "renders"
+
+    # TTS fabric (ADR 0050): the supervised TTS router. `tts_backend` selects
+    # which backend the *doctor* checks for readiness; at render time the
+    # supervisor (CLAUDE.md §4) chooses per beat among *all* wired backends, with
+    # the local, zero-cost `kokoro` as the guaranteed default + fallback. Kokoro
+    # needs no service key (just the model files below), so a Kokoro-only setup
+    # renders with no NVIDIA/HF/OpenAI account; nvidia/hf join the router only
+    # when their key is set.
+    tts_backend: str = "kokoro"
+
+    # Local Kokoro ONNX backend (ADR 0050, the default). `kokoro_model_path` /
+    # `kokoro_voices_path` point at the two files `kokoro-onnx` needs; defaults
+    # are the canonical filenames (resolved relative to the working directory) so
+    # the provider *constructs* with no config — the files only need to exist at
+    # synth time (the doctor checks their presence). `pip install kokoro-onnx`
+    # and download both files; see .env.example. No key — it runs on-device.
+    kokoro_model_path: str = "kokoro-v1.0.onnx"
+    kokoro_voices_path: str = "voices-v1.0.bin"
+
+    # NVIDIA TTS NIM backend (ADR 0047, optional fallback). Wired into the router
+    # only when `nvidia_tts_api_key` is set; reuses the operator's NVIDIA build
+    # key but on the *speech* endpoint (a distinct base_url from the LLM NIM).
+    # SecretStr so the key never leaks into logs/reprs.
+    nvidia_tts_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_tts_api_key: SecretStr = SecretStr("")
+    nvidia_tts_model: str = "magpie-tts-multilingual"
+
+    # HuggingFace TTS Inference API backend (ADR 0048, optional fallback). Wired
+    # into the router only when `huggingface_tts_api_key` is set; the *model* is
+    # the voice (no separate voice selector). SecretStr so it never leaks.
+    huggingface_tts_model: str = "hexgrad/Kokoro-82M"
+    huggingface_tts_api_key: SecretStr = SecretStr("")
 
 
 @lru_cache(maxsize=1)
