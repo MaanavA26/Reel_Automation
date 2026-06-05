@@ -14,11 +14,14 @@ from app.schemas.research_state import (
     Evidence,
     JobStatus,
     KnowledgeAcquisitionState,
+    KnowledgeReasoningState,
     ResearchPlan,
     ResearchState,
     Source,
     SourceType,
     SubQuestion,
+    SupportLevel,
+    Verdict,
 )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "research_state_minimal.json"
@@ -36,6 +39,34 @@ def test_research_state_defaults() -> None:
     assert state.acquisition.sources == []
     assert state.acquisition.chunks == []
     assert state.acquisition.evidence == []
+    assert isinstance(state.reasoning, KnowledgeReasoningState)
+    assert state.reasoning.verdicts == []
+
+
+def test_verdict_roundtrips_under_strict_schema() -> None:
+    # M8: a Verdict references evidence by id (no inline snapshot) and carries
+    # code-attached provenance; it must round-trip under extra="forbid".
+    verdict = Verdict(
+        claim="canonical claim",
+        support_level=SupportLevel.CORROBORATED,
+        supporting_evidence_ids=["ev_1", "ev_2"],
+        contradicting_evidence_ids=[],
+        confidence=0.9,
+        verified_via="verification:fake-model",
+    )
+    assert verdict.id.startswith("vd_")
+    rebuilt = Verdict.model_validate(verdict.model_dump())
+    assert rebuilt == verdict
+
+
+def test_verdict_confidence_out_of_range_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Verdict(
+            claim="x",
+            support_level=SupportLevel.SINGLE_SOURCE,
+            confidence=1.5,
+            verified_via="v",
+        )
 
 
 def test_id_format_prefixes() -> None:

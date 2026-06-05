@@ -1,23 +1,25 @@
 """Deep Research workflow — LangGraph orchestration.
 
 This module wires the canonical :class:`~app.schemas.research_state.ResearchState`
-through a sequence of band nodes (plan -> acquire -> ingest -> extract -> reason
+through a sequence of band nodes (plan -> acquire -> ingest -> extract -> verify
 -> publish) on the happy path, with each band conditionally short-circuiting to a
 terminal ``failed`` sink if a node fails (M4).
 
-The ``plan`` (M3), ``acquire`` (M5), ``ingest`` (M6), and ``extract`` (M7) nodes
-are real: bound to a `ResearchPlannerAgent`, a `SourceDiscoveryAgent`, an
-`IngestionService`, and an `EvidenceExtractionAgent` respectively via
-factory-closure dependency injection (ADR 0004), bundled into a single
-`ResearchDeps` container (ADR 0009). The ``reason``/``publish`` nodes remain
-**lifecycle stubs** — advancing ``status``/``updated_at`` and demonstrating the
-state-threading contract — until their owning milestones replace them (M8-M12).
+The ``plan`` (M3), ``acquire`` (M5), ``ingest`` (M6), ``extract`` (M7), and
+``verify`` (M8) nodes are real: bound to a `ResearchPlannerAgent`, a
+`SourceDiscoveryAgent`, an `IngestionService`, an `EvidenceExtractionAgent`, and
+a `CrossVerificationAgent` respectively via factory-closure dependency injection
+(ADR 0004), bundled into a single `ResearchDeps` container (ADR 0009). The
+``publish`` node remains a **lifecycle stub** — advancing
+``status``/``updated_at`` and demonstrating the state-threading contract — until
+its owning milestone replaces it (M11-M12).
 
 ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
 ``0002-langgraph-workflow-integration.md``; node dependency injection in
 ``0004-node-dependency-injection.md``; error handling + conditional routing in
 ``0005-workflow-error-handling.md``; dependency bundling in
-``0009-evidence-extraction.md``.
+``0009-evidence-extraction.md``; cross-verification in
+``0010-cross-verification.md``.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from typing import Any, Literal, Protocol
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agents.cross_verification import CrossVerificationAgent
 from app.agents.evidence_extraction import EvidenceExtractionAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
@@ -61,6 +64,7 @@ class ResearchDeps:
     discovery: SourceDiscoveryAgent
     ingestion: IngestionService
     extractor: EvidenceExtractionAgent
+    verifier: CrossVerificationAgent
 
 
 class _NodeFn(Protocol):
@@ -146,13 +150,22 @@ def _make_extract_node(extractor: EvidenceExtractionAgent) -> _NodeFn:
     return extract_node
 
 
-async def reason_node(state: ResearchState) -> StateUpdate:
-    """Knowledge Reasoning band. Lifecycle-only stub (no substate yet).
+def _make_verify_node(verifier: CrossVerificationAgent) -> _NodeFn:
+    """Build the Cross-Verification node (M8), bound to a verification agent.
 
-    ``KnowledgeReasoningState`` is intentionally not on the schema yet; it
-    lands with its owning milestones (M8-M10).
+    Opens the Knowledge Reasoning band: cross-checks the extracted `Evidence`
+    into `Verdict`s (corroborated / single-source / contradicted) written to
+    ``reasoning.verdicts`` in a *single* channel write. Per-cluster concurrency
+    and the graph-level fan-out reducer stay deferred to the checkpointer
+    milestone (ADR 0010 / ADR 0002 §6).
     """
-    return {"updated_at": datetime.now(UTC)}
+
+    async def verify_node(state: ResearchState) -> StateUpdate:
+        verdicts = await verifier.verify(state.acquisition.evidence)
+        reasoning = state.reasoning.model_copy(update={"verdicts": verdicts})
+        return {"reasoning": reasoning, "updated_at": datetime.now(UTC)}
+
+    return verify_node
 
 
 async def publish_node(state: ResearchState) -> StateUpdate:
@@ -214,19 +227,20 @@ def _route_on_status(state: ResearchState) -> Literal["continue", "failed"]:
 def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
     """Build and compile the Deep Research workflow graph.
 
-    Topology: ``START -> plan -> acquire -> ingest -> extract -> reason ->
+    Topology: ``START -> plan -> acquire -> ingest -> extract -> verify ->
     publish -> END`` on the happy path, with each band conditionally
     short-circuiting to a terminal ``failed`` sink if a node failed (ADR 0005).
-    The ``plan``/``acquire``/``ingest``/``extract`` nodes are bound to their
-    collaborators (from ``deps``) via factory-closure DI (ADR 0004). Retries,
-    budgets, ``CANCELLED``, and quality gates are deferred (ADR 0005 § Deferred).
+    The ``plan``/``acquire``/``ingest``/``extract``/``verify`` nodes are bound to
+    their collaborators (from ``deps``) via factory-closure DI (ADR 0004).
+    Retries, budgets, ``CANCELLED``, and quality gates are deferred
+    (ADR 0005 § Deferred).
     """
     graph = StateGraph(ResearchState)
     graph.add_node("plan", _with_failure_handling(_make_plan_node(deps.planner)))
     graph.add_node("acquire", _with_failure_handling(_make_acquire_node(deps.discovery)))
     graph.add_node("ingest", _with_failure_handling(_make_ingest_node(deps.ingestion)))
     graph.add_node("extract", _with_failure_handling(_make_extract_node(deps.extractor)))
-    graph.add_node("reason", _with_failure_handling(reason_node))
+    graph.add_node("verify", _with_failure_handling(_make_verify_node(deps.verifier)))
     graph.add_node("publish", _with_failure_handling(publish_node))
     graph.add_node("failed", failed_node)
 
@@ -235,8 +249,8 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
         ("plan", "acquire"),
         ("acquire", "ingest"),
         ("ingest", "extract"),
-        ("extract", "reason"),
-        ("reason", "publish"),
+        ("extract", "verify"),
+        ("verify", "publish"),
     )
     for source, following in bands:
         graph.add_conditional_edges(

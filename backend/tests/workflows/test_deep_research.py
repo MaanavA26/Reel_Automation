@@ -3,10 +3,10 @@
 These tests assert the *state-threading contract* every node depends on:
 lifecycle transitions, job-identity stability, that list-channel writes survive
 the merge, that the final state re-validates under the strict schema, and that
-the real ``plan`` (M3) / ``acquire`` (M5) / ``ingest`` (M6) / ``extract`` (M7)
-nodes populate state end-to-end. They run the real compiled graph with
-`FakeProvider`-backed agents + fakes (hermetic — no network) and drive the async
-entrypoint with ``asyncio.run`` (no ``pytest-asyncio`` dependency required).
+the real ``plan`` (M3) / ``acquire`` (M5) / ``ingest`` (M6) / ``extract`` (M7) /
+``verify`` (M8) nodes populate state end-to-end. They run the real compiled graph
+with `FakeProvider`-backed agents + fakes (hermetic — no network) and drive the
+async entrypoint with ``asyncio.run`` (no ``pytest-asyncio`` dependency required).
 Dependencies are injected as a single `ResearchDeps` bundle (ADR 0009).
 """
 
@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import asyncio
 
+from app.agents.cross_verification import (
+    CrossVerificationAgent,
+    _VerdictDraft,
+    _VerificationOutput,
+)
 from app.agents.evidence_extraction import (
     EvidenceExtractionAgent,
     _ExtractedClaim,
@@ -29,7 +34,7 @@ from app.agents.source_discovery import (
     _DiscoveryOutput,
     _DiscoveryQuery,
 )
-from app.schemas.research_state import JobStatus, ResearchState, SourceType
+from app.schemas.research_state import JobStatus, ResearchState, SourceType, SupportLevel
 from app.services.ingestion.base import FetchedContent
 from app.services.ingestion.fakes import FakeFetchProvider
 from app.services.ingestion.service import IngestionService
@@ -104,12 +109,33 @@ def _extractor(n_chunks: int = 2) -> EvidenceExtractionAgent:
     return EvidenceExtractionAgent(router)
 
 
+def _verifier() -> CrossVerificationAgent:
+    """Verification agent: the fake-extracted claims all share the token "claim",
+    so the blocker groups them into one cluster → one scripted model call."""
+    output = _VerificationOutput(
+        verdicts=[
+            _VerdictDraft(
+                claim="verdict",
+                support_level=SupportLevel.SINGLE_SOURCE,
+                confidence=0.7,
+                supporting=[0],
+            )
+        ]
+    )
+    router = ModelRouter(
+        providers={"fake": FakeProvider([output])},
+        policy={ModelRole.PLANNING: ModelChoice("fake", "planning-model")},
+    )
+    return CrossVerificationAgent(router)
+
+
 def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> ResearchDeps:
     return ResearchDeps(
         planner=planner or _planner(),
         discovery=_discovery(n_sources),
         ingestion=_ingestion(n_sources),
         extractor=_extractor(n_sources),
+        verifier=_verifier(),
     )
 
 
@@ -177,6 +203,15 @@ def test_extract_node_populates_evidence() -> None:
     assert ev.extracted_via.startswith("extraction:")
 
 
+def test_verify_node_populates_verdicts() -> None:
+    # M8: the verify node cross-checks evidence into reasoning verdicts.
+    final = _run()
+    assert final.reasoning.verdicts, "verify node produced no verdicts"
+    vd = final.reasoning.verdicts[0]
+    assert vd.supporting_evidence_ids
+    assert vd.verified_via.startswith("verification:")
+
+
 def test_mixed_source_types_only_web_ingested() -> None:
     # M6: discovery yields a WEB and a PDF source; v1 ingests only WEB, skips the
     # PDF, and the job still COMPLETES (no crash on the unsupported type).
@@ -200,6 +235,7 @@ def test_mixed_source_types_only_web_ingested() -> None:
             )
         ),
         extractor=_extractor(1),
+        verifier=_verifier(),
     )
     final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
     assert final.status is JobStatus.COMPLETED
@@ -224,6 +260,7 @@ def test_real_substates_present() -> None:
     final = _run()
     assert final.plan is not None
     assert final.acquisition is not None
+    assert final.reasoning is not None
 
 
 def test_publish_node_transitions_to_completed() -> None:
