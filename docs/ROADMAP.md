@@ -54,6 +54,17 @@
   providers), progress → M13 (streaming API), `CANCELLED` → checkpointer milestone, quality
   gates/revision loops → M10 (Editorial Critic agent). The §5.6 "Orchestrator Agent" is aspirational
   until M10 gives it something to judge.
+- ✅ **Budget guardrails (`services/budget/`).** Estimated-spend metering + **enforcement** so
+  unattended runs can't overspend — the budgets half ADR 0005 deferred. A `BudgetTracker` accrues
+  call counts + estimated cost per-run / per-calendar-day (injected `Clock`) and raises
+  `BudgetExceededError` *before* a call breaches a ceiling (pre-call reservation; strict `>` boundary;
+  both ceilings optional + independent; unmodeled model fails loud, never silent $0). Cost via a
+  pluggable `CostEstimator` (`PerCallEstimator` / `TokenCostEstimator`) over a configurable
+  `PriceTable`. A `BudgetedModelProvider` decorator estimates → reserves → blocks before the wrapped
+  call, so a blocked call incurs no real spend. Estimate-vs-actual caveat documented (no token-usage
+  in the provider contract → a conservative ceiling, not an invoice). Hermetic (`FakeProvider` + stub
+  clock). **Capability only, no wiring** (M-LP pattern); the Orchestrator owns how to react to a block.
+  [ADR 0035](adrs/0035-budget-guardrails.md).
 
 ## Knowledge Acquisition band
 - ✅ **M5 — Source Discovery agent.** `SourceDiscoveryAgent` plans search queries via the
@@ -156,6 +167,13 @@
     `ResearchState` (job id = `state.id`); held as a process-singleton on `app.state`. The sync `POST
     /research` endpoint is kept. **Single-process, non-durable by design** — durable/cross-worker store,
     streaming progress, and `CANCELLED` deferred. [ADR 0031](adrs/0031-async-job-store.md).
+    - 🔨 **M13 (durable job store):** `SqliteJobStore` (`backend/app/services/jobs/sqlite_store.py`) — the
+      durable backend ADR 0031 deferred. Same `enqueue`/`get`/`run` lifecycle, but persists the canonical
+      `ResearchState` JSON (`model_dump_json`/`model_validate_json`) to a stdlib-`sqlite3` file keyed by job
+      id, so jobs **survive process restarts**. A small `JobStoreBackend` protocol (`base.py`) is the
+      injectable seam both backends satisfy; the in-memory `JobStore` stays the default and the API is
+      unchanged. **Capability only — not yet wired** as the `app.state` default; still single-process (no
+      cross-worker). [ADR 0040](adrs/0040-sqlite-job-store.md).
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
@@ -309,6 +327,22 @@
   without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
   configures the root logger idempotently; entrypoint wiring left as a one-line call.
   [ADR 0030](adrs/0030-structured-logging.md).
+
+## Topic / Trend Sourcing (CLAUDE.md §3.4 — pipeline front door)
+- ✅ **Topic / trend sourcing layer** (`backend/app/topics/`). The pipeline's front
+  door: niche/seed → ranked candidate video topics (the backlog's trend-awareness ask).
+  Both halves are *tools*, not agents (CLAUDE.md §4): a `TrendProvider` async protocol +
+  `Source`-shaped `TopicIdea` DTO (auto-minted `topic_…` id + required `sourced_via` — the
+  §11 anchor: tool-discovered, never LLM-invented), a hermetic `FakeTrendProvider`, an
+  `httpx` `HttpTrendProvider` over a generic trends/keyword REST shape (mirrors the search
+  adapters; MockTransport-hermetic + an integration smoke reading the key from the env, no
+  `config.py` change), and a pure deterministic `select_topics` (rank by provider `signal`
+  desc, explicit title/id tie-break, `None` lowest; de-dupe keeps the highest-signal idea
+  wholesale). The green-light *judgment* is a future content-strategy agent (§5.6) that
+  consumes this ordered output; the scheduler queue, a `Settings` field, and a provider
+  router are deferred follow-ups. Local `_gen_id` copy (ADR 0019 precedent) keeps the layer
+  standalone. [ADR 0037](adrs/0037-topic-trend-sourcing.md).
+
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
