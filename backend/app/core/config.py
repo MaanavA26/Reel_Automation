@@ -145,6 +145,49 @@ class Settings(BaseSettings):
     veo_location: str = "us-central1"
     veo_storage_uri: str = ""
 
+    # Closed-loop automation runner (ADR 0054): the unattended driver loop that
+    # turns sourced topics into videos on a cadence, gates them, and (when
+    # permitted) publishes. All defaults are the *safe* ones — nothing auto-posts
+    # until the operator opts into autonomous mode AND wires a live publisher.
+    #
+    # `loop_mode` selects the ALLOW-branch behavior: "supervised" (default) holds
+    # *every* produced video for a human approve via the reviews API and posts
+    # nothing automatically; "autonomous" auto-publishes a safety-ALLOW video
+    # within budget and only holds REVIEW items. AUTONOMOUS AUTO-POSTS TO REAL
+    # PLATFORMS — it is the last-mile, live-key-gated income loop, OFF by default.
+    loop_mode: str = "supervised"
+    # Comma-separated niches the loop's topic source mines each tick (the trend
+    # provider's seeds). Empty by default; a live loop must set at least one.
+    loop_niches: str = ""
+    # Cadence: fire every `loop_interval_seconds` (anchored interval schedule).
+    # Defaults to 6h (4 fires/day) — a sane N/day baseline; tune per channel.
+    loop_interval_seconds: float = 21_600.0
+    # How many topics to drain + produce per tick, and the produce concurrency cap.
+    loop_batch_size: int = 3
+    loop_max_concurrency: int = 2
+    # The loop's own per-video cost estimate + ceilings (a coarse count/cost
+    # guardrail so an unattended run cannot produce/post unboundedly; distinct
+    # from the model-fabric per-call budget). `None` ceilings mean "no cap".
+    loop_video_cost_estimate: float = 1.0
+    loop_budget_per_run: float | None = None
+    loop_budget_per_day: float | None = None
+    # Platform privacy for published videos. Defaults to "private" so even
+    # autonomous mode never posts publicly without an explicit opt-in.
+    loop_privacy_status: str = "private"
+
+    # Topic / trend sourcing (ADR 0037): the live `HttpTrendProvider` key. Empty
+    # by default; a live loop reads this to mine `loop_niches`. SecretStr so it
+    # never leaks into logs/reprs.
+    trends_api_key: SecretStr = SecretStr("")
+
+    # Publishing fabric (ADR 0033): the live YouTube Shorts publisher. The OAuth
+    # access token is operator-minted/refreshed (the token-refresh deferral of
+    # ADR 0033); empty by default so a live publish is opt-in. SecretStr so it
+    # never leaks. `publish_platform` selects which adapter the loop wires
+    # ("youtube"); other platforms are protocol-conformant skeletons (ADR 0033).
+    publish_platform: str = "youtube"
+    youtube_access_token: SecretStr = SecretStr("")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

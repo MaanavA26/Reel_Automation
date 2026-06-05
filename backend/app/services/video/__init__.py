@@ -20,6 +20,7 @@ from app.services.video.jobs import (
     VideoJobStore,
 )
 from app.services.video.pipeline import (
+    ProducedVideo,
     VideoArtifact,
     VideoPipeline,
     VideoPipelineBundle,
@@ -28,6 +29,7 @@ from app.services.video.pipeline import (
 )
 
 __all__ = [
+    "ProducedVideo",
     "VideoArtifact",
     "VideoJob",
     "VideoJobRunner",
