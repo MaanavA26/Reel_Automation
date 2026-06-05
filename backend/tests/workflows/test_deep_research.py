@@ -4,10 +4,10 @@ These tests assert the *state-threading contract* every node depends on:
 lifecycle transitions, job-identity stability, that list-channel writes survive
 the merge, that the final state re-validates under the strict schema, and that
 the real ``plan`` (M3) / ``acquire`` (M5) / ``ingest`` (M6) / ``extract`` (M7) /
-``verify`` (M8) / ``synthesize`` (M9) nodes populate state end-to-end. They run
-the real compiled graph with `FakeProvider`-backed agents + fakes (hermetic — no
-network) and drive the async entrypoint with ``asyncio.run`` (no
-``pytest-asyncio`` dependency required). Dependencies are injected as a single
+``verify`` (M8) / ``synthesize`` (M9) / ``critique`` (M10a) nodes populate state
+end-to-end. They run the real compiled graph with `FakeProvider`-backed agents +
+fakes (hermetic — no network) and drive the async entrypoint with ``asyncio.run``
+(no ``pytest-asyncio`` dependency required). Dependencies are injected as a single
 `ResearchDeps` bundle (ADR 0009).
 """
 
@@ -19,6 +19,10 @@ from app.agents.cross_verification import (
     CrossVerificationAgent,
     _VerdictDraft,
     _VerificationOutput,
+)
+from app.agents.editorial_critic import (
+    EditorialCriticAgent,
+    _CritiqueOutput,
 )
 from app.agents.evidence_extraction import (
     EvidenceExtractionAgent,
@@ -147,6 +151,15 @@ def _synthesizer() -> SynthesisAgent:
     return SynthesisAgent(router)
 
 
+def _critic() -> EditorialCriticAgent:
+    """Editorial critic: scripts an empty issue list (decision is code-derived)."""
+    router = ModelRouter(
+        providers={"fake": FakeProvider([_CritiqueOutput(issues=[], rationale="ok")])},
+        policy={ModelRole.PLANNING: ModelChoice("fake", "planning-model")},
+    )
+    return EditorialCriticAgent(router)
+
+
 def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> ResearchDeps:
     return ResearchDeps(
         planner=planner or _planner(),
@@ -155,6 +168,7 @@ def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> Re
         extractor=_extractor(n_sources),
         verifier=_verifier(),
         synthesizer=_synthesizer(),
+        critic=_critic(),
     )
 
 
@@ -240,6 +254,15 @@ def test_synthesize_node_populates_findings() -> None:
     assert f.synthesized_via.startswith("synthesis:")
 
 
+def test_critique_node_populates_critique() -> None:
+    # M10a: the critique node assesses the synthesis into a reasoning critique.
+    final = _run()
+    assert final.reasoning.critiques, "critique node produced no critique"
+    c = final.reasoning.critiques[0]
+    assert c.critiqued_via.startswith("critique:")
+    assert c.decision is not None
+
+
 def test_mixed_source_types_only_web_ingested() -> None:
     # M6: discovery yields a WEB and a PDF source; v1 ingests only WEB, skips the
     # PDF, and the job still COMPLETES (no crash on the unsupported type).
@@ -265,6 +288,7 @@ def test_mixed_source_types_only_web_ingested() -> None:
         extractor=_extractor(1),
         verifier=_verifier(),
         synthesizer=_synthesizer(),
+        critic=_critic(),
     )
     final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
     assert final.status is JobStatus.COMPLETED

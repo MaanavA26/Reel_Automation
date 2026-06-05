@@ -2,24 +2,27 @@
 
 This module wires the canonical :class:`~app.schemas.research_state.ResearchState`
 through a sequence of band nodes (plan -> acquire -> ingest -> extract -> verify
--> synthesize -> publish) on the happy path, with each band conditionally
-short-circuiting to a terminal ``failed`` sink if a node fails (M4).
+-> synthesize -> critique -> publish) on the happy path, with each band
+conditionally short-circuiting to a terminal ``failed`` sink if a node fails (M4).
 
 The ``plan`` (M3), ``acquire`` (M5), ``ingest`` (M6), ``extract`` (M7),
-``verify`` (M8), and ``synthesize`` (M9) nodes are real: bound to a
-`ResearchPlannerAgent`, a `SourceDiscoveryAgent`, an `IngestionService`, an
-`EvidenceExtractionAgent`, a `CrossVerificationAgent`, and a `SynthesisAgent`
-respectively via factory-closure dependency injection (ADR 0004), bundled into a
-single `ResearchDeps` container (ADR 0009). The ``publish`` node remains a
-**lifecycle stub** — advancing ``status``/``updated_at`` and demonstrating the
-state-threading contract — until its owning milestone replaces it (M11-M12).
+``verify`` (M8), ``synthesize`` (M9), and ``critique`` (M10a) nodes are real:
+bound to a `ResearchPlannerAgent`, a `SourceDiscoveryAgent`, an
+`IngestionService`, an `EvidenceExtractionAgent`, a `CrossVerificationAgent`, a
+`SynthesisAgent`, and an `EditorialCriticAgent` respectively via factory-closure
+dependency injection (ADR 0004), bundled into a single `ResearchDeps` container
+(ADR 0009). The graph is linear at M10a; the bounded ``critique -> synthesize``
+revision loop is M10b (ADR 0012). The ``publish`` node remains a **lifecycle
+stub** — advancing ``status``/``updated_at`` and demonstrating the state-threading
+contract — until its owning milestone replaces it (M11-M12).
 
 ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
 ``0002-langgraph-workflow-integration.md``; node dependency injection in
 ``0004-node-dependency-injection.md``; error handling + conditional routing in
 ``0005-workflow-error-handling.md``; dependency bundling in
 ``0009-evidence-extraction.md``; cross-verification in
-``0010-cross-verification.md``; synthesis in ``0011-synthesis.md``.
+``0010-cross-verification.md``; synthesis in ``0011-synthesis.md``; editorial
+critic in ``0012-editorial-critic.md``.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.cross_verification import CrossVerificationAgent
+from app.agents.editorial_critic import EditorialCriticAgent
 from app.agents.evidence_extraction import EvidenceExtractionAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
@@ -67,6 +71,7 @@ class ResearchDeps:
     extractor: EvidenceExtractionAgent
     verifier: CrossVerificationAgent
     synthesizer: SynthesisAgent
+    critic: EditorialCriticAgent
 
 
 class _NodeFn(Protocol):
@@ -187,6 +192,28 @@ def _make_synthesize_node(synthesizer: SynthesisAgent) -> _NodeFn:
     return synthesize_node
 
 
+def _make_critique_node(critic: EditorialCriticAgent) -> _NodeFn:
+    """Build the Editorial Critic node (M10a), bound to a critic agent.
+
+    Closes the Knowledge Reasoning band: assesses the synthesis for coverage and
+    quality and appends a `Critique` to ``reasoning.critiques`` in a *single*
+    channel write. The critique's ``decision`` is **recorded, not yet routed on**
+    — this node routes forward to ``publish`` via the existing ``_route_on_status``
+    like every other band. The bounded revision loop that consumes ``decision``
+    (back-edge, iteration counter, feed-forward) is M10b; recording the decision
+    now mirrors ADR 0005 shipping ``error`` before its consumers (ADR 0012).
+    """
+
+    async def critique_node(state: ResearchState) -> StateUpdate:
+        critique = await critic.critique(state.plan, state.reasoning.synthesis)
+        reasoning = state.reasoning.model_copy(
+            update={"critiques": [*state.reasoning.critiques, critique]}
+        )
+        return {"reasoning": reasoning, "updated_at": datetime.now(UTC)}
+
+    return critique_node
+
+
 async def publish_node(state: ResearchState) -> StateUpdate:
     """Knowledge Publishing band terminal node. Stub: marks the job ``COMPLETED``.
 
@@ -247,12 +274,13 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
     """Build and compile the Deep Research workflow graph.
 
     Topology: ``START -> plan -> acquire -> ingest -> extract -> verify ->
-    synthesize -> publish -> END`` on the happy path, with each band
+    synthesize -> critique -> publish -> END`` on the happy path, with each band
     conditionally short-circuiting to a terminal ``failed`` sink if a node failed
     (ADR 0005). The ``plan``/``acquire``/``ingest``/``extract``/``verify``/
-    ``synthesize`` nodes are bound to their collaborators (from ``deps``) via
-    factory-closure DI (ADR 0004). Retries, budgets, ``CANCELLED``, and quality
-    gates are deferred (ADR 0005 § Deferred).
+    ``synthesize``/``critique`` nodes are bound to their collaborators (from
+    ``deps``) via factory-closure DI (ADR 0004). The graph stays **linear** at
+    M10a — the bounded ``critique -> synthesize`` revision back-edge is M10b
+    (ADR 0012). Retries, budgets, ``CANCELLED`` are deferred (ADR 0005 § Deferred).
     """
     graph = StateGraph(ResearchState)
     graph.add_node("plan", _with_failure_handling(_make_plan_node(deps.planner)))
@@ -261,6 +289,7 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
     graph.add_node("extract", _with_failure_handling(_make_extract_node(deps.extractor)))
     graph.add_node("verify", _with_failure_handling(_make_verify_node(deps.verifier)))
     graph.add_node("synthesize", _with_failure_handling(_make_synthesize_node(deps.synthesizer)))
+    graph.add_node("critique", _with_failure_handling(_make_critique_node(deps.critic)))
     graph.add_node("publish", _with_failure_handling(publish_node))
     graph.add_node("failed", failed_node)
 
@@ -271,7 +300,8 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
         ("ingest", "extract"),
         ("extract", "verify"),
         ("verify", "synthesize"),
-        ("synthesize", "publish"),
+        ("synthesize", "critique"),
+        ("critique", "publish"),
     )
     for source, following in bands:
         graph.add_conditional_edges(

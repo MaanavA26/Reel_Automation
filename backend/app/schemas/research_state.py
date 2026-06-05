@@ -203,20 +203,83 @@ class Synthesis(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
 
 
+class CritiqueDecision(StrEnum):
+    """The Editorial Critic's verdict on a synthesis (M10). Binary at v1."""
+
+    ACCEPT = "accept"
+    REVISE = "revise"
+
+
+class QualityIssueKind(StrEnum):
+    """Model-authored class of a synthesis quality problem (M10)."""
+
+    REDUNDANT = "redundant"  # findings restate the same point
+    IMBALANCED = "imbalanced"  # a sub-question answered one-sidedly
+    OVERSTATED = "overstated"  # prose overstates past disputed/weakest_support
+    UNCLEAR = "unclear"  # statement is vague / not answer-shaped
+
+
+class QualityIssue(BaseModel):
+    """One model-authored quality problem with a synthesis, tied to ids (M10).
+
+    The model authors ``kind`` + ``detail`` (prose) and references the affected
+    findings/sub-questions only by *local index*; code resolves those to real ids
+    (out-of-range dropped) and an issue resolving to nothing is dropped — it
+    cannot be about anything that exists (§11, the M9 drop-empty guard). No id at
+    v1 (a sub-unit of `Critique`).
+    """
+
+    model_config = _STRICT
+
+    kind: QualityIssueKind
+    detail: str
+    finding_ids: list[str] = Field(default_factory=list)
+    sub_question_ids: list[str] = Field(default_factory=list)
+
+
+class Critique(BaseModel):
+    """An editorial assessment of a `Synthesis` — the band's third-order judgment (M10).
+
+    A `Verdict` judges evidence; a `Finding` composes verdicts; a `Critique`
+    judges the *composition*. It is meta-inference, so the §11 boundary is
+    enforced exactly as M8/M9: the model authors prose + local indices only;
+    every id is code-attached/validated; and the *structural* fact (which
+    sub-questions are uncovered) is **code-derived** — the model gets no field to
+    report it. The accept/revise ``decision`` is likewise code-derived (REVISE
+    iff any sub-question is uncovered OR any quality issue was raised), so the
+    model cannot vote ACCEPT past an objective coverage gap. See ADR 0012.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("crit"))
+    # code-derived structural facts (never model-authored):
+    decision: CritiqueDecision
+    uncovered_sub_question_ids: list[str] = Field(default_factory=list)
+    # model-authored judgment (issue ids code-attached/validated):
+    issues: list[QualityIssue] = Field(default_factory=list)
+    rationale: str
+    critiqued_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    critiqued_via: str
+
+
 class KnowledgeReasoningState(BaseModel):
     """State produced by the Knowledge Reasoning band of Deep Research.
 
-    Carries the cross-checked `Verdict`s (M8) and the `Synthesis` built on them
-    (M9). Gap analysis and revision artifacts (M10) slot in here as additional
-    fields in their owning milestone — same empty-substate convention as the
-    other bands (ADR 0001): an empty ``verdicts`` / ``synthesis.findings`` reads
-    as "that step has not run," not "it produced nothing."
+    Carries the cross-checked `Verdict`s (M8), the `Synthesis` built on them (M9),
+    and the editorial `Critique`s of that synthesis (M10). ``critiques`` is a list
+    (not a single object): a `Critique` has required fields so it cannot be a
+    ``default_factory`` default, and ``| None`` is barred by ADR 0001's
+    no-None-defaults-for-band-fields rule — the empty list is the "critic has not
+    run" signal, and it gives the M10b revision loop a per-iteration audit trail.
+    Same empty-substate convention as the other bands (ADR 0001).
     """
 
     model_config = _STRICT
 
     verdicts: list[Verdict] = Field(default_factory=list)
     synthesis: Synthesis = Field(default_factory=Synthesis)
+    critiques: list[Critique] = Field(default_factory=list)
 
 
 class SubQuestion(BaseModel):
