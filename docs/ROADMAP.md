@@ -263,6 +263,16 @@
     (lavfi inputs, skips without ffmpeg). No new dependency. [ADR 0023](adrs/0023-ffmpeg-composition.md).
   - ⬜ **TTS / visuals.** Real `TTSProvider` (ElevenLabs/Azure) and image/video generation-or-retrieval
     (Veo/stock) — still network-gated behind their protocols.
+  - ✅ **Agent-supervised TTS fabric.** `TTSRouter` (`backend/app/media/tts/router.py`) — deterministic
+    *tool* over named `TTSProvider`s + an ordered `fallback_order` policy (cheapest/most-local first:
+    kokoro → nvidia → huggingface); `synthesize` tries the chosen backend, then walks the rest on failure
+    until one succeeds, raising `TTSExhaustedError` only when all fail (full traversal vs the LLM
+    resilience single hop; chosen backend never tried twice). `TTSSupervisorAgent`
+    (`backend/app/agents/tts_supervisor.py`) — *judgment*: the `PLANNING`-role model picks backend + voice
+    from the router's *real* `available()` set (listed in-prompt), the choice is validated/clamped to the
+    default if invalid, then executed via the router. Agent proposes, router disposes + guarantees delivery.
+    Hermetic (`FakeTTSProvider`/`FakeProvider`, one failing); binds to the protocol so the sibling adapters
+    drop in. Capability only — not yet wired into `MediaPipeline`. [ADR 0049](adrs/0049-tts-fabric-supervisor.md).
   - ✅ **Visual / B-roll retrieval seam.** `backend/app/media/visuals/` — the retrieval half of the
     §3.3 "image/video retrieval" responsibility ADR 0019 deferred (the `visual_uris` producer for
     `CompositionService.render`). A `VisualProvider` protocol + a `VisualClip` DTO (`vis_`,
