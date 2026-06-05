@@ -235,3 +235,54 @@ def test_default_composition_root_fails_loud() -> None:
         response = test_client.post("/api/v1/research", json={"topic": "t"})
 
     assert response.status_code == 503
+
+
+# --- Async job surface (POST /research/jobs + GET /research/jobs/{id}) -------
+# Under TestClient, BackgroundTasks run to completion *before* the POST response
+# returns, so: the POST body is the QUEUED snapshot (serialized pre-run), and the
+# first GET already reflects the terminal state — no polling/sleep needed.
+
+
+def test_enqueue_research_job_returns_queued_id(client: TestClient) -> None:
+    response = client.post("/api/v1/research/jobs", json={"topic": "quantum computing"})
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["topic"] == "quantum computing"
+    assert body["id"].startswith("job_")
+    # The enqueue response is the pre-run snapshot.
+    assert body["status"] == JobStatus.QUEUED.value
+
+
+def test_enqueue_then_get_reaches_completed(client: TestClient) -> None:
+    enqueue = client.post("/api/v1/research/jobs", json={"topic": "t"})
+    job_id = enqueue.json()["id"]
+
+    # The background task has already run by the time the POST returned.
+    result = client.get(f"/api/v1/research/jobs/{job_id}")
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["id"] == job_id
+    assert body["status"] == JobStatus.COMPLETED.value
+    # The terminal snapshot carries the full result, not just a status.
+    assert body["plan"]["sub_questions"][0]["text"] == "q1"
+
+
+def test_enqueue_job_accepts_max_syntheses(client: TestClient) -> None:
+    response = client.post("/api/v1/research/jobs", json={"topic": "t", "max_syntheses": 3})
+
+    assert response.status_code == 202
+
+
+def test_get_unknown_job_returns_404(client: TestClient) -> None:
+    response = client.get("/api/v1/research/jobs/job_does_not_exist")
+
+    assert response.status_code == 404
+    assert "job_does_not_exist" in response.json()["detail"]
+
+
+def test_enqueue_job_rejects_empty_topic(client: TestClient) -> None:
+    response = client.post("/api/v1/research/jobs", json={"topic": ""})
+
+    assert response.status_code == 422

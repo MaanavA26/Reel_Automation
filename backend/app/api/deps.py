@@ -9,7 +9,10 @@ touching production code.
 
 from __future__ import annotations
 
+from fastapi import Request
+
 from app.services.composition import build_research_deps
+from app.services.jobs import JobStore
 from app.workflows.deep_research import ResearchDeps
 
 
@@ -22,3 +25,17 @@ def get_research_deps() -> ResearchDeps:
     override this provider before the first request.
     """
     return build_research_deps()
+
+
+def get_job_store(request: Request) -> JobStore:
+    """Provide the process-singleton `JobStore` held on ``app.state``.
+
+    Unlike `get_research_deps`, the store is **stateful** and must be one
+    instance per process — enqueue (POST) and read (GET) have to hit the same
+    dict or every status read 404s. It is therefore created once in
+    `app.main.create_app` and read off ``request.app.state`` here, never rebuilt
+    per request. Each `create_app()` gets its own store, which gives tests
+    per-app isolation without an override.
+    """
+    store: JobStore = request.app.state.job_store
+    return store

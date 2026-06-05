@@ -34,6 +34,13 @@
   optional `ModelJudge` with a structural self-judge guard), and ranks via typed
   `EvalResult`/`EvalReport` (`best_choice()` → a `ModelChoice` for a policy). Hermetic via
   `FakeProvider`; live runner + CLI deferred. [ADR 0029](adrs/0029-llm-eval-harness.md).
+  - ✅ **Response cache (fabric enhancement):** `CachingModelProvider` (`services/llm/cache.py`) —
+    a decorator (composition) wrapping any `ModelProvider`, memoizing `complete_structured` by a
+    stable SHA-256 over `(model, system, prompt, schema-identity)`. Pluggable `CacheBackend`
+    protocol + stdlib in-memory default (optional `max_size` LRU); hit skips the wrapped call,
+    miss populates; exceptions never cached; values deep-copied for isolation. Opt-in (trades
+    freshness for cost on non-deterministic models); stdlib-only, no router/config change.
+    Hermetic over `FakeProvider`. [ADR 0026](adrs/0026-llm-response-cache.md).
 
 ## Research Control band
 - ✅ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node:
@@ -115,8 +122,11 @@
   the **full** findings set (so an uncited disputed finding still surfaces) and the
   `UNRESOLVED_CRITIQUE` banner fires when the revision loop exhausted unsatisfied (fulfilling
   ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
-  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
-  creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
+  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Creator-packet fields
+  deferred to M12. Deterministic `render_markdown` / `render_html` renderers
+  (`services/publishing/markdown.py`, `html.py`) now fulfil ADR 0017's deferred renderer — citations
+  and caveats always render (the §11 non-omittability carried to the output surface), HTML escapes
+  all text. [ADR 0017](adrs/0017-report-generation.md).
 - ✅ **M12 — Creator packet + downstream handoff artifacts.** Report + findings → a short-form
   `CreatorPacket` (`CreatorPacketAgent`, the Short-Form Content Strategist, `LONG_CONTEXT` role) —
   hook ideas, content angles, short narrative options (model creative prose) + **code-derived key
@@ -139,6 +149,13 @@
   `TestClient` suite drives the real workflow hermetically via `app.dependency_overrides`.
   [ADR 0016](adrs/0016-research-api-surface.md). **Deferred:** background/async execution, streaming
   progress, id-addressable `GET /research/{id}` + job store, frontend wiring.
+  - 🔨 **M13 (async slice):** async job store + status endpoints. `POST /api/v1/research/jobs`
+    enqueues + returns **202** with the `QUEUED` `ResearchState` id, runs `run_research` in a FastAPI
+    background task; `GET /api/v1/research/jobs/{id}` reads the snapshot (status + result) or 404s. A new
+    in-memory `JobStore` service (`backend/app/services/jobs/`) owns the lifecycle and stores the canonical
+    `ResearchState` (job id = `state.id`); held as a process-singleton on `app.state`. The sync `POST
+    /research` endpoint is kept. **Single-process, non-durable by design** — durable/cross-worker store,
+    streaming progress, and `CANCELLED` deferred. [ADR 0031](adrs/0031-async-job-store.md).
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
@@ -146,6 +163,13 @@
     from the API, findings rendered with honest `disputed`/`weakest_support` flags (§11). Ships a sample
     fixture so the surface renders before the submit route lands. Backend route + streaming deferred to
     the M13 (backend) PR.
+    - 🔨 **M13 (frontend) — report + creator packet rendering.** Extends the results UI with the band-D
+      publishing artifacts: `ReportView` (title/abstract/sections + a code-resolved References list from
+      citations) with a **non-omittable** `CaveatsPanel` (always shown when caveats are present, §11),
+      and `CreatorPacketView` (hooks/angles/narratives + code-derived key facts) with the
+      unsafe-claim **warnings** flagged prominently and cross-linked to creative elements by shared
+      `finding_ids`. Adds `Report`/`Citation`/`Caveat`/`CreatorPacket` (+ siblings) TS types and the
+      `publishing` substate; fixture extended. `npm run build` not runnable in the offline sandbox.
 
 ## Media Production Layer (CLAUDE.md §3.3 — second major component)
 > Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Introduced
@@ -158,8 +182,41 @@
   + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
   carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
   Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
-- ⬜ **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
+- 🔨 **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
   image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+- ✅ **Creator-packet → media handoff contract.** `MediaPipeline` (`backend/app/media/pipeline.py`) — a
+  deterministic tool (no LLM) that maps a `CreatorPacket` to a `MediaPlan` (assembled-video descriptor):
+  selects a `NarrativeOption` → synthesizes narration once (`TTSProvider`) → allocates caption timings by
+  cumulative integer boundaries (invariant `cues[-1].end_ms == audio.duration_ms == video.duration_ms`) →
+  builds the track (`DeterministicSubtitleService`) → composes (`CompositionService`). DI + skip/raise mirror
+  `IngestionService`; the single, deliberate ADR 0019 §4 coupling exception (only this file imports the Deep
+  Research schema). `visual_uris` pass through (sourcing still deferred). [ADR 0025](adrs/0025-media-pipeline.md).
+  - ✅ **Composition (ffmpeg).** `FfmpegCompositionService` (`backend/app/media/composition/ffmpeg.py`) —
+    first concrete `CompositionService`: assembles audio + `CaptionTrack` + visuals into a vertical MP4.
+    Pure `build_ffmpeg_args` (argv construction, fully unit-testable with no binary) split from a single
+    mockable `subprocess.run` execution seam; missing-binary/non-zero-exit → `CompositionError`
+    (`shlex.join`'d command + stderr tail). Duration mirrors narration; captions burned in via
+    `subtitles.format_srt`. Hermetic argv/error tests + `@pytest.mark.integration` real-render smoke
+    (lavfi inputs, skips without ffmpeg). No new dependency. [ADR 0023](adrs/0023-ffmpeg-composition.md).
+  - ⬜ **TTS / visuals.** Real `TTSProvider` (ElevenLabs/Azure) and image/video generation-or-retrieval
+    (Veo/stock) — still network-gated behind their protocols.
+  - ✅ **Visual / B-roll retrieval seam.** `backend/app/media/visuals/` — the retrieval half of the
+    §3.3 "image/video retrieval" responsibility ADR 0019 deferred (the `visual_uris` producer for
+    `CompositionService.render`). A `VisualProvider` protocol + a `VisualClip` DTO (`vis_`,
+    `extra='forbid'`, required `produced_via`; `kind`/`width`/`height`/optional `duration_ms`/`attribution`)
+    + a hermetic `FakeVisualProvider`, mirroring the search fabric (DTO beside its protocol in `base.py`).
+    Real httpx `StockVisualProvider` over Pexels `GET /videos/search` (Brave-style hardening: key at
+    construction, never leaked; injectable client; `per_page` clamp; `VisualError` only on bad shape).
+    The tool, never the LLM, mints the asset `uri`. Offline `MockTransport` tests +
+    `@pytest.mark.integration` live (`REEL_AUTOMATION_STOCK_API_KEY`). Adapter-only, no wiring/config
+    change. [ADR 0024](adrs/0024-visual-retrieval.md).
+- ⬜ **Concrete adapters.** Behind the ADR 0019 protocols, network/binary-gated.
+  - ✅ **TTS:** `HttpTtsProvider` (httpx, generic REST `POST /synthesize` → raw audio bytes) — one
+    adapter serves any compatible backend by config; bytes→`audio_uri` via an injected storage `sink`
+    (descriptor-not-bytes invariant); `duration_ms` from an `X-Audio-Duration-Ms` header (fail-loud on
+    absence); LLM-adapter hardening (`MockTransport`-tested, key-at-construction, integration smoke).
+    [ADR 0022](adrs/0022-tts-adapter.md).
+  - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
 
@@ -181,6 +238,11 @@
       a second concrete provider for failover/robustness, `web.results[]` → `SearchResult`, `count`
       clamped to 20, offline-tested via `MockTransport` + a `@pytest.mark.integration` smoke test.
       [ADR 0021](adrs/0021-brave-search-adapter.md).
+  - ✅ **Provider registry:** `app/services/llm/providers.py` — a `name → ProviderPreset`
+    registry (`groq`, `nvidia`, `huggingface`, local `ollama`) + `build_provider(name, settings)`.
+    Operator selects a known backend by name (registry owns the `base_url`) and supplies only the
+    key, so several providers' keys coexist in one `.env`. Builds the M-LP.1 adapter; additive
+    alongside `factory.py`, no routing/wiring change. [ADR 0028](adrs/0028-provider-registry.md).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
   - 🔨 **M-LP.4 (YouTube ingestion):** `TranscriptProvider` seam + `FakeTranscriptProvider`
@@ -202,6 +264,17 @@
     repair retry. Gemini-specific `Settings` (`gemini_api_key`/`gemini_base_url`/`gemini_model`);
     `httpx.MockTransport` unit tests (incl. nested-schema sanitization) + `@pytest.mark.integration`
     live smoke test. Router wiring is a trivial deferred follow-up. [ADR 0020](adrs/0020-gemini-native-adapter.md).
+  - ✅ **M-LP (resilience):** LLM retry + policy-driven fallback (`services/llm/resilience.py`) — the
+    deterministic *service* half of fault tolerance (CLAUDE.md §4), realizing the retries ADR 0005
+    deferred and engaging ADR 0003's `FALLBACK` slot. A `ResilientModelProvider` decorator (bounded
+    retry-with-backoff, `ModelProvider`-in/out drop-in) + a `complete_with_fallback` helper /
+    `ResilientRouter` (one policy-driven `FALLBACK` hop on terminal primary failure — no retry-of-retry).
+    Provider-neutral by injection (stdlib only; `retry_on` + async sleeper injected — the
+    transient-vs-permanent narrowing is the wiring site's job); self-/no-fallback guards re-raise the
+    primary error. Hermetic + deterministic (recording sleeper asserts the backoff schedule, raising
+    fake asserts retry count + fallback). Capability only, no wiring. Reconciles with ADR 0005's
+    node-level `RetryPolicy` (provider-level composes *under* the node); the "when to give up" judgment
+    stays with the Orchestrator. [ADR 0027](adrs/0027-llm-resilience.md).
 
 ## Ops / Infrastructure
 - ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
@@ -215,6 +288,12 @@
   to a Docker-enabled run / the `docker-build.yml` CI job.
 - ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
   target is chosen; current workflow is build-only to keep zero auth/secret surface.
+- ✅ **Structured logging + run-tracing scaffold.** Stdlib-only `JsonFormatter` (one JSON
+  object per log line: `ts`/`level`/`logger`/`message`/`run_id`) + a `contextvars`-based
+  `run_context(run_id)` so a Deep Research job's logs are correlatable across all nodes/agents
+  without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
+  configures the root logger idempotently; entrypoint wiring left as a one-line call.
+  [ADR 0030](adrs/0030-structured-logging.md).
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
