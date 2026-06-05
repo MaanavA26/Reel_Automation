@@ -2,21 +2,24 @@
 
 This module wires the canonical :class:`~app.schemas.research_state.ResearchState`
 through a sequence of band nodes (plan -> acquire -> ingest -> extract -> verify
--> synthesize -> critique -> publish) on the happy path, with each band
-conditionally short-circuiting to a terminal ``failed`` sink if a node fails (M4).
+-> synthesize -> critique -> report -> packet -> publish) on the happy path, with
+each band conditionally short-circuiting to a terminal ``failed`` sink if a node
+fails (M4).
 
 The ``plan`` (M3), ``acquire`` (M5), ``ingest`` (M6), ``extract`` (M7),
-``verify`` (M8), ``synthesize`` (M9), and ``critique`` (M10a) nodes are real:
-bound to a `ResearchPlannerAgent`, a `SourceDiscoveryAgent`, an
-`IngestionService`, an `EvidenceExtractionAgent`, a `CrossVerificationAgent`, a
-`SynthesisAgent`, and an `EditorialCriticAgent` respectively via factory-closure
+``verify`` (M8), ``synthesize`` (M9), ``critique`` (M10a), ``report`` (M11), and
+``packet`` (M12) nodes are real: bound to a `ResearchPlannerAgent`, a
+`SourceDiscoveryAgent`, an `IngestionService`, an `EvidenceExtractionAgent`, a
+`CrossVerificationAgent`, a `SynthesisAgent`, an `EditorialCriticAgent`, a
+`ReportAgent`, and a `CreatorPacketAgent` respectively via factory-closure
 dependency injection (ADR 0004), bundled into a single `ResearchDeps` container
-(ADR 0009). The ``critique`` node closes the band with the graph's first
-**cycle** (M10b): on ``revise`` it routes back to ``synthesize`` (feeding the
-critique forward), bounded by a ``max_syntheses`` cap so the loop always
-terminates (ADR 0012). The ``publish`` node remains a **lifecycle stub** —
-advancing ``status``/``updated_at`` and demonstrating the state-threading
-contract — until its owning milestone replaces it (M11-M12).
+(ADR 0009). The ``critique`` node carries the graph's first **cycle** (M10b): on
+``revise`` it routes back to ``synthesize`` (feeding the critique forward),
+bounded by a ``max_syntheses`` cap so the loop always terminates (ADR 0012); on
+``accept``/``exhausted`` it proceeds to ``report``. The ``publish`` node remains
+the **lifecycle terminal** — marking the job ``COMPLETED`` (the success mirror of
+the ``failed`` sink) — while the Publishing band's artifact work lives in
+``report`` (M11) and ``packet`` (M12).
 
 ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
 ``0002-langgraph-workflow-integration.md``; node dependency injection in
@@ -24,7 +27,8 @@ ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
 ``0005-workflow-error-handling.md``; dependency bundling in
 ``0009-evidence-extraction.md``; cross-verification in
 ``0010-cross-verification.md``; synthesis in ``0011-synthesis.md``; editorial
-critic in ``0012-editorial-critic.md``.
+critic in ``0012-editorial-critic.md``; report generation in
+``0017-report-generation.md``.
 """
 
 from __future__ import annotations
@@ -37,9 +41,11 @@ from typing import Any, Literal, Protocol
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agents.creator_packet import CreatorPacketAgent
 from app.agents.cross_verification import CrossVerificationAgent
 from app.agents.editorial_critic import EditorialCriticAgent
 from app.agents.evidence_extraction import EvidenceExtractionAgent
+from app.agents.report import ReportAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
 from app.agents.synthesis import SynthesisAgent
@@ -74,6 +80,8 @@ class ResearchDeps:
     verifier: CrossVerificationAgent
     synthesizer: SynthesisAgent
     critic: EditorialCriticAgent
+    reporter: ReportAgent
+    strategist: CreatorPacketAgent
 
 
 class _NodeFn(Protocol):
@@ -227,10 +235,56 @@ def _make_critique_node(critic: EditorialCriticAgent) -> _NodeFn:
     return critique_node
 
 
-async def publish_node(state: ResearchState) -> StateUpdate:
-    """Knowledge Publishing band terminal node. Stub: marks the job ``COMPLETED``.
+def _make_report_node(reporter: ReportAgent) -> _NodeFn:
+    """Build the Report node (M11), bound to a report agent.
 
-    ``ResearchPublishingState`` and real artifact generation land in M11-M12.
+    Opens the Research Publishing band: composes the reasoning output into a
+    structured `Report` (model prose; code-derived citations + non-omittable
+    caveats) appended to ``publishing.reports`` in a *single* channel write. It
+    sits downstream of the M10b revision loop's exit (the critique router routes
+    ``accept``/``exhausted`` here), so a report over an exhausted-unsatisfied
+    synthesis still ships — with the unresolved-critique caveat the critic carried
+    forward (ADR 0017 / ADR 0012).
+    """
+
+    async def report_node(state: ResearchState) -> StateUpdate:
+        report = await reporter.generate(state.plan, state.reasoning, state.acquisition)
+        publishing = state.publishing.model_copy(
+            update={"reports": [*state.publishing.reports, report]}
+        )
+        return {"publishing": publishing, "updated_at": datetime.now(UTC)}
+
+    return report_node
+
+
+def _make_packet_node(strategist: CreatorPacketAgent) -> _NodeFn:
+    """Build the Creator Packet node (M12), bound to the content strategist.
+
+    Closes the Research Publishing band: turns the latest `Report` + the
+    synthesized findings into a short-form `CreatorPacket` (model creative prose;
+    code-derived key facts + non-omittable unsafe-claim warnings) appended to
+    ``publishing.packets`` in a *single* channel write. It sits between ``report``
+    and the ``publish`` lifecycle terminal, so a packet over a thin / exhausted /
+    all-disputed report still ships — heavily warned, not failed (ADR 0018).
+    """
+
+    async def packet_node(state: ResearchState) -> StateUpdate:
+        report = state.publishing.reports[-1]
+        packet = await strategist.generate(report, state.reasoning.synthesis.findings)
+        publishing = state.publishing.model_copy(
+            update={"packets": [*state.publishing.packets, packet]}
+        )
+        return {"publishing": publishing, "updated_at": datetime.now(UTC)}
+
+    return packet_node
+
+
+async def publish_node(state: ResearchState) -> StateUpdate:
+    """Lifecycle terminal: marks a successful run ``COMPLETED``.
+
+    The success mirror of the ``failed`` sink. The Publishing band's artifact work
+    (the `Report` (M11) and the `CreatorPacket` (M12)) is produced upstream by the
+    ``report`` and ``packet`` nodes; this node just closes out the lifecycle.
     """
     return {"status": JobStatus.COMPLETED, "updated_at": datetime.now(UTC)}
 
@@ -322,17 +376,20 @@ def build_research_graph(
     """Build and compile the Deep Research workflow graph.
 
     Topology: ``START -> plan -> acquire -> ingest -> extract -> verify ->
-    synthesize -> critique -> publish -> END`` on the happy path, with each band
-    conditionally short-circuiting to a terminal ``failed`` sink if a node failed
-    (ADR 0005). The ``plan``/``acquire``/``ingest``/``extract``/``verify``/
-    ``synthesize``/``critique`` nodes are bound to their collaborators (from
-    ``deps``) via factory-closure DI (ADR 0004).
+    synthesize -> critique -> report -> packet -> publish -> END`` on the happy
+    path, with each band conditionally short-circuiting to a terminal ``failed``
+    sink if a node failed (ADR 0005). The ``plan``/``acquire``/``ingest``/
+    ``extract``/``verify``/``synthesize``/``critique``/``report``/``packet`` nodes
+    are bound to their collaborators (from ``deps``) via factory-closure DI
+    (ADR 0004).
 
     M10b adds the first **cycle**: ``critique`` routes via `_make_critique_router`
-    to ``synthesize`` on ``revise`` (the back-edge), ``publish`` on
+    to ``synthesize`` on ``revise`` (the back-edge), to ``report`` on
     ``accept``/``exhausted``, or ``failed`` on a critic exception. The
-    ``max_syntheses`` cap bounds the cycle so it always terminates. Retries,
-    budgets, ``CANCELLED`` are deferred (ADR 0005 § Deferred).
+    ``max_syntheses`` cap bounds the cycle so it always terminates. M11's
+    ``report`` and M12's ``packet`` nodes (the Publishing band) sit downstream of
+    the loop's exit (``report -> packet``) and feed the ``publish`` lifecycle
+    terminal. Retries, budgets, ``CANCELLED`` are deferred (ADR 0005 § Deferred).
     """
     graph = StateGraph(ResearchState)
     graph.add_node("plan", _with_failure_handling(_make_plan_node(deps.planner)))
@@ -342,6 +399,8 @@ def build_research_graph(
     graph.add_node("verify", _with_failure_handling(_make_verify_node(deps.verifier)))
     graph.add_node("synthesize", _with_failure_handling(_make_synthesize_node(deps.synthesizer)))
     graph.add_node("critique", _with_failure_handling(_make_critique_node(deps.critic)))
+    graph.add_node("report", _with_failure_handling(_make_report_node(deps.reporter)))
+    graph.add_node("packet", _with_failure_handling(_make_packet_node(deps.strategist)))
     graph.add_node("publish", _with_failure_handling(publish_node))
     graph.add_node("failed", failed_node)
 
@@ -367,10 +426,21 @@ def build_research_graph(
         _make_critique_router(max_syntheses),
         {
             "revise": "synthesize",  # the revision back-edge (the cycle)
-            "accept": "publish",
-            "exhausted": "publish",
+            "accept": "report",
+            "exhausted": "report",  # best-effort report on an exhausted-unsatisfied run
             "failed": "failed",
         },
+    )
+    # The report (M11) and packet (M12) nodes inherit the standard status routing.
+    graph.add_conditional_edges(
+        "report",
+        _route_on_status,
+        {"continue": "packet", "failed": "failed"},
+    )
+    graph.add_conditional_edges(
+        "packet",
+        _route_on_status,
+        {"continue": "publish", "failed": "failed"},
     )
     graph.add_edge("publish", END)
     graph.add_edge("failed", END)
@@ -382,11 +452,12 @@ def _recursion_limit(max_syntheses: int) -> int:
 
     The real termination guarantee is the code-incremented counter + router cap;
     this only catches a guard *bug*. It must sit comfortably above the legit max
-    — the 6 pre-critique nodes + ``max_syntheses`` * (synthesize + critique) +
-    publish — so the router always fires first (a hit raises an uncatchable
-    ``GraphRecursionError``, so it must never be the real terminator). ADR 0012.
+    — the 5 pre-loop nodes + ``max_syntheses`` * (synthesize + critique) + the
+    report + packet + publish tail — so the router always fires first (a hit raises
+    an uncatchable ``GraphRecursionError``, so it must never be the real
+    terminator). ADR 0012 / ADR 0017 / ADR 0018.
     """
-    return 6 + 2 * max_syntheses + 1 + 10  # legit worst-case + generous margin
+    return 5 + 2 * max_syntheses + 3 + 10  # legit worst-case + generous margin
 
 
 async def run_research(
