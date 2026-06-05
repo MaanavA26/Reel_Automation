@@ -167,6 +167,13 @@
     `ResearchState` (job id = `state.id`); held as a process-singleton on `app.state`. The sync `POST
     /research` endpoint is kept. **Single-process, non-durable by design** — durable/cross-worker store,
     streaming progress, and `CANCELLED` deferred. [ADR 0031](adrs/0031-async-job-store.md).
+    - 🔨 **M13 (durable job store):** `SqliteJobStore` (`backend/app/services/jobs/sqlite_store.py`) — the
+      durable backend ADR 0031 deferred. Same `enqueue`/`get`/`run` lifecycle, but persists the canonical
+      `ResearchState` JSON (`model_dump_json`/`model_validate_json`) to a stdlib-`sqlite3` file keyed by job
+      id, so jobs **survive process restarts**. A small `JobStoreBackend` protocol (`base.py`) is the
+      injectable seam both backends satisfy; the in-memory `JobStore` stays the default and the API is
+      unchanged. **Capability only — not yet wired** as the `app.state` default; still single-process (no
+      cross-worker). [ADR 0040](adrs/0040-sqlite-job-store.md).
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
