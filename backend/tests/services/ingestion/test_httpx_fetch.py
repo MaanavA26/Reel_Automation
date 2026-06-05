@@ -33,10 +33,20 @@ def test_fetches_html_with_ua_and_no_credentials() -> None:
 
 def test_rejects_disallowed_content_type() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF")
+        # image/* is not on the allowlist (HTML/text + application/pdf only).
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"\x89PNG")
 
     with pytest.raises(FetchError):
-        asyncio.run(_provider(handler).fetch(url="https://a.com/f.pdf"))
+        asyncio.run(_provider(handler).fetch(url="https://a.com/x.png"))
+
+
+def test_allows_pdf_content_type() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.4")
+
+    got = asyncio.run(_provider(handler).fetch(url="https://a.com/f.pdf"))
+    assert got.content == b"%PDF-1.4"
+    assert got.content_type == "application/pdf"
 
 
 def test_rejects_oversize_response() -> None:

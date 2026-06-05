@@ -1,0 +1,64 @@
+# Reel Automation — local container orchestration.
+#
+# Brings up the FastAPI backend and the static-served React frontend.
+#
+# Usage:
+#   cp backend/.env.example backend/.env   # provide provider key(s)
+#   docker compose up --build
+#
+# Endpoints (host):
+#   backend  -> http://localhost:8000  (health: /api/v1/health)
+#   frontend -> http://localhost:8080
+#
+# The frontend bundle calls the backend via VITE_API_BASE_URL, which defaults
+# to http://localhost:8000 (the published backend port), so the browser
+# reaches the API directly — no reverse proxy required for local dev.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: reel-automation-backend:local
+    # Provider keys / model routing live here (gitignored). Copy
+    # backend/.env.example -> backend/.env before `up`.
+    env_file:
+      - backend/.env
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Browser-side API base. Defaults to the published backend port.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    image: reel-automation-frontend:local
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:80/
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

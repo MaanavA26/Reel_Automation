@@ -108,10 +108,43 @@
   ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
   (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
   creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
-- ⬜ **M12 — Creator packet + downstream handoff artifacts.** Hooks, angles, key facts, narrative options; unsafe-claim warnings.
+- ✅ **M12 — Creator packet + downstream handoff artifacts.** Report + findings → a short-form
+  `CreatorPacket` (`CreatorPacketAgent`, the Short-Form Content Strategist, `LONG_CONTEXT` role) —
+  hook ideas, content angles, short narrative options (model creative prose) + **code-derived key
+  facts** + a **code-derived, non-omittable unsafe/unverified-claim warnings list**. Agent/tool
+  split: creative prose is the agent; `services/publishing/warnings.py` is deterministic, reusing
+  M11's `finding_caveat_kind` predicate (no drift). §11 keystone, mirrored one layer up: warnings
+  range over the **full** findings set (so an uncited disputed finding still surfaces a warning),
+  tied to a hook/angle/narrative by **shared `finding_ids`**; the model authors no facts or
+  warnings. Single finding index space (the report is prose context, not a second index space).
+  New `CreatorPacket`/`HookIdea`/`ContentAngle`/`NarrativeOption`/`KeyFact`/`CreatorWarning` schema
+  + `publishing.packets`; dedicated `packet` node (`…→report→packet→publish`); 9th `ResearchDeps`
+  field. A thin/heavily-warned packet is valid, not a failure. [ADR 0018](adrs/0018-creator-packet.md).
 
 ## Surface
-- ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
+- 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
+  - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
+    `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
+    (injectable transport, snake-case wire contract mirroring `ResearchState`), presentation decoupled
+    from the API, findings rendered with honest `disputed`/`weakest_support` flags (§11). Ships a sample
+    fixture so the surface renders before the submit route lands. Backend route + streaming deferred to
+    the M13 (backend) PR.
+
+## Media Production Layer (CLAUDE.md §3.3 — second major component)
+> Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Introduced
+> via [ADR 0019](adrs/0019-media-production-layer.md) per §3.4/§16.
+- ✅ **Layer scaffold.** `backend/app/media/` seams mirroring the LLM/search fabric:
+  `TTSProvider` protocol + hermetic `FakeTTSProvider` (text → `SynthesizedSpeech`);
+  `CompositionService` protocol + hermetic `FakeCompositionService` wrapping the future
+  FFmpeg step (assets → `RenderedVideo`, **no real ffmpeg**); and — asymmetric — a subtitle
+  band shipping **real** code (sync `SubtitleService` protocol + `DeterministicSubtitleService`
+  + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
+  carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
+  Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
+- ⬜ **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
+  image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+- ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
+  inputs; earns its own ADR once M12's packet shape is fixed.
 
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
@@ -127,9 +160,45 @@
       [ADR 0021](adrs/0021-brave-search-adapter.md).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
+  - ✅ **M-LP.4 (PDF ingestion):** second parser behind the ingestion seam — a `PdfParser`
+    protocol + `pypdf`-backed `PypdfParser` (lazy import, offline-safe to construct) +
+    `FakePdfParser`, routed for `SourceType.PDF` in `IngestionService`; content-type allowlist
+    widened to `application/pdf`. Text-layer only; scanned/image-only PDFs (OCR) stay deferred.
+    `Chunk.parsed_via` reconsidered and re-deferred to a dedicated schema PR (ADR 0008's gate).
+    `pypdf` added to deps. [ADR 0014](adrs/0014-pdf-ingestion.md).
+  - ✅ **M-LP.3 (LLM, Gemini-native):** `GeminiProvider` (httpx, `generateContent` REST) — the
+    second concrete `ModelProvider`, whose value over M-LP.1 is **native structured output**:
+    `responseSchema` + `responseMimeType: application/json` constrain decoding server-side
+    (vs schema-in-prompt). A bounded `_to_gemini_schema` sanitizer inlines `$ref`/`$defs` and
+    drops Gemini-rejected keys; `x-goog-api-key` header auth (no key in URL); one error-fed
+    repair retry. Gemini-specific `Settings` (`gemini_api_key`/`gemini_base_url`/`gemini_model`);
+    `httpx.MockTransport` unit tests (incl. nested-schema sanitization) + `@pytest.mark.integration`
+    live smoke test. Router wiring is a trivial deferred follow-up. [ADR 0020](adrs/0020-gemini-native-adapter.md).
+
+## Ops / Infrastructure
+- ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
+  `app.main:app`, `/api/v1/health` HEALTHCHECK) + `frontend/Dockerfile` (node build → nginx
+  static serve, SPA fallback) + root `docker-compose.yml` (backend + frontend, `depends_on`
+  health, `env_file: backend/.env`) + per-context `.dockerignore` + a build-only
+  `.github/workflows/docker-build.yml` (PR/push to `main`, no registry push). No app-code or
+  `ci.yml` changes. **Run locally:** `cp backend/.env.example backend/.env && docker compose up
+  --build` → backend `http://localhost:8000`, frontend `http://localhost:8080`. Images were
+  authored offline (no Docker daemon in the sandbox); the first real `docker build` is deferred
+  to a Docker-enabled run / the `docker-build.yml` CI job.
+- ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
+  target is chosen; current workflow is build-only to keep zero auth/secret surface.
+## Showcase
+- 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
+  the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
+  failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
+  (CLAUDE.md §12). Tracks the engine through M10b.
 
 ---
-*Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
+*Updated 2026-06-05. Deep Research milestone: **M12** (Creator packet) next; M1–M11 built. Separately, the **Media Production Layer** (CLAUDE.md §3.3, second major component) is seam-scaffolded — see its section above and [ADR 0019](adrs/0019-media-production-layer.md).*
+*Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
++ M-LP.1 (LLM adapter) implemented; the Planner runs live (Gemini/Groq), the pipeline
+fetches+chunks real web sources, and synthesize→critique→(revise) runs end-to-end. Next:
+M11 (report/export).*
 
 > **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
 > and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are

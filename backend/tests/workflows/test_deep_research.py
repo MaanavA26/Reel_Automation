@@ -4,8 +4,9 @@ These tests assert the *state-threading contract* every node depends on:
 lifecycle transitions, job-identity stability, that list-channel writes survive
 the merge, that the final state re-validates under the strict schema, and that
 the real ``plan`` (M3) / ``acquire`` (M5) / ``ingest`` (M6) / ``extract`` (M7) /
-``verify`` (M8) / ``synthesize`` (M9) / ``critique`` (M10a) nodes populate state
-end-to-end. They run the real compiled graph with `FakeProvider`-backed agents +
+``verify`` (M8) / ``synthesize`` (M9) / ``critique`` (M10a) / ``report`` (M11) /
+``packet`` (M12) nodes populate state end-to-end. They run the real compiled graph
+with `FakeProvider`-backed agents +
 fakes (hermetic — no network) and drive the async entrypoint with ``asyncio.run``
 (no ``pytest-asyncio`` dependency required). Dependencies are injected as a single
 `ResearchDeps` bundle (ADR 0009).
@@ -15,6 +16,11 @@ from __future__ import annotations
 
 import asyncio
 
+from app.agents.creator_packet import (
+    CreatorPacketAgent,
+    _HookDraft,
+    _PacketOutput,
+)
 from app.agents.cross_verification import (
     CrossVerificationAgent,
     _VerdictDraft,
@@ -192,6 +198,16 @@ def _reporter() -> ReportAgent:
     return ReportAgent(router)
 
 
+def _strategist() -> CreatorPacketAgent:
+    """Content strategist: one hook citing the first finding (F0)."""
+    output = _PacketOutput(hooks=[_HookDraft(text="hook", findings=[0])])
+    router = ModelRouter(
+        providers={"fake": FakeProvider([output])},
+        policy={ModelRole.LONG_CONTEXT: ModelChoice("fake", "long-context-model")},
+    )
+    return CreatorPacketAgent(router)
+
+
 def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> ResearchDeps:
     return ResearchDeps(
         planner=planner or _planner(),
@@ -202,6 +218,7 @@ def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> Re
         synthesizer=_synthesizer(),
         critic=_critic(),
         reporter=_reporter(),
+        strategist=_strategist(),
     )
 
 
@@ -305,6 +322,18 @@ def test_report_node_populates_report() -> None:
     assert r.published_via.startswith("report:")
 
 
+def test_packet_node_populates_creator_packet() -> None:
+    # M12: the packet node turns the report + findings into a creator packet,
+    # appended to publishing.packets and tied back to the report by report_id.
+    final = _run()
+    assert final.publishing.packets, "packet node produced no creator packet"
+    p = final.publishing.packets[0]
+    assert p.hooks
+    assert p.key_facts  # code-derived from the findings
+    assert p.report_id == final.publishing.reports[0].id
+    assert p.published_via.startswith("packet:")
+
+
 # --- M10b: the bounded revision loop (ADR 0012) -----------------------------
 
 
@@ -352,6 +381,7 @@ def _loop_deps(
             )
         ),
         reporter=_reporter(),
+        strategist=_strategist(),
     )
     return deps, synth_fake, critic_fake
 
@@ -444,6 +474,7 @@ def test_mixed_source_types_only_web_ingested() -> None:
         synthesizer=_synthesizer(),
         critic=_critic(),
         reporter=_reporter(),
+        strategist=_strategist(),
     )
     final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
     assert final.status is JobStatus.COMPLETED
