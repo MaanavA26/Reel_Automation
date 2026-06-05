@@ -153,6 +153,12 @@
     schema-in-prompt + `model_validate_json` + error-fed retry. `build_router_from_settings`
     composition root + `python -m app.cli.plan` harness + `@pytest.mark.integration` live test.
     **The Planner is now runnable against a real free LLM.** [ADR 0007](adrs/0007-openai-compatible-llm-adapter.md).
+  - ✅ **M-LP.2 (search):** `TavilySearchProvider` (httpx, Tavily `POST /search`) — first
+    concrete `SearchProvider`, mirroring M-LP.1 (Bearer auth, MockTransport tests, integration
+    smoke test). Maps hits → `SearchResult` (web-only); the tool, never the LLM, mints the
+    `url`. Adds `Settings.search_api_key` (separate key) + `.env.example` block; adapter only,
+    no wiring yet. **Source Discovery is now runnable end-to-end against a real backend.**
+    [ADR 0013](adrs/0013-live-search-adapter.md).
   - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
     - ✅ **Brave:** `BraveSearchProvider` (httpx, `GET /res/v1/web/search`, `X-Subscription-Token`) —
       a second concrete provider for failover/robustness, `web.results[]` → `SearchResult`, `count`

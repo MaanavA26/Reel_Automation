@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     base_url: str = ""
     api_key: SecretStr = SecretStr("")
 
+    # Search fabric (used by the live `SearchProvider` adapter; CLAUDE.md §4,
+    # ADR 0013). Kept separate from the LLM `api_key`/`base_url` above so an
+    # operator can configure search and the model independently. `search_api_key`
+    # is a SecretStr so it never leaks into logs or reprs. Empty by default; set
+    # via .env / env vars for live use. See .env.example.
+    search_api_key: SecretStr = SecretStr("")
+
     # Search fabric (used by the live `SearchProvider` adapters; CLAUDE.md §4).
     # `brave_api_key` configures the Brave Web Search adapter (ADR 0021) and is
     # kept distinct from the LLM `api_key` (and from any other search provider's
