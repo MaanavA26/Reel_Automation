@@ -111,7 +111,13 @@
 - ⬜ **M12 — Creator packet + downstream handoff artifacts.** Hooks, angles, key facts, narrative options; unsafe-claim warnings.
 
 ## Surface
-- ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
+- 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
+  - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
+    `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
+    (injectable transport, snake-case wire contract mirroring `ResearchState`), presentation decoupled
+    from the API, findings rendered with honest `disputed`/`weakest_support` flags (§11). Ships a sample
+    fixture so the surface renders before the submit route lands. Backend route + streaming deferred to
+    the M13 (backend) PR.
 
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
@@ -130,8 +136,29 @@
     `httpx.MockTransport` unit tests (incl. nested-schema sanitization) + `@pytest.mark.integration`
     live smoke test. Router wiring is a trivial deferred follow-up. [ADR 0020](adrs/0020-gemini-native-adapter.md).
 
+## Ops / Infrastructure
+- ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
+  `app.main:app`, `/api/v1/health` HEALTHCHECK) + `frontend/Dockerfile` (node build → nginx
+  static serve, SPA fallback) + root `docker-compose.yml` (backend + frontend, `depends_on`
+  health, `env_file: backend/.env`) + per-context `.dockerignore` + a build-only
+  `.github/workflows/docker-build.yml` (PR/push to `main`, no registry push). No app-code or
+  `ci.yml` changes. **Run locally:** `cp backend/.env.example backend/.env && docker compose up
+  --build` → backend `http://localhost:8000`, frontend `http://localhost:8080`. Images were
+  authored offline (no Docker daemon in the sandbox); the first real `docker build` is deferred
+  to a Docker-enabled run / the `docker-build.yml` CI job.
+- ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
+  target is chosen; current workflow is build-only to keep zero auth/secret surface.
+## Showcase
+- 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
+  the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
+  failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
+  (CLAUDE.md §12). Tracks the engine through M10b.
+
 ---
-*Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
+*Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
++ M-LP.1 (LLM adapter) implemented; the Planner runs live (Gemini/Groq), the pipeline
+fetches+chunks real web sources, and synthesize→critique→(revise) runs end-to-end. Next:
+M11 (report/export).*
 
 > **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
 > and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are
