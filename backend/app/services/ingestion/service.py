@@ -25,6 +25,7 @@ from app.services.ingestion.transcript import (
 
 logger = logging.getLogger(__name__)
 
+
 class IngestionError(RuntimeError):
     """Raised when ingestion yields no chunks across all sources."""
 
