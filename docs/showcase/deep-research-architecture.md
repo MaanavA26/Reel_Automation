@@ -5,10 +5,11 @@
 > subsystem that turns a raw topic into verified, plan-anchored findings for
 > downstream short-form video generation.
 >
-> This document describes the engine **as actually built** on the
-> `feat/phase-0/revision-loop` branch (milestones M1–M10b). Where a capability is
-> designed but not yet implemented, it is called out explicitly — accuracy is the
-> point. Every claim links to the file or ADR that backs it.
+> This document describes the engine **as actually built** on `main` (milestones
+> M1–M12 — the full Deep Research pipeline through the Research Publishing band).
+> Where a capability is designed but not yet implemented, it is called out
+> explicitly — accuracy is the point. Every claim links to the file or ADR that
+> backs it.
 
 ---
 
@@ -47,7 +48,7 @@ read and write one typed state object
 | **A. Research Control** | `plan` + the orchestration fabric | `plan`, `status`, `error`, `revision_iteration` | a `ResearchPlan` of prioritized `SubQuestion`s; lifecycle + failure routing |
 | **B. Knowledge Acquisition** | `acquire`, `ingest`, `extract` | `acquisition.{sources,chunks,evidence}` | discovered `Source`s → `Chunk`s → source-grounded `Evidence` |
 | **C. Knowledge Reasoning** | `verify`, `synthesize`, `critique` | `reasoning.{verdicts,synthesis,critiques}` | cross-checked `Verdict`s → plan-anchored `Finding`s → a quality `Critique` |
-| **D. Research Publishing** | `publish` (stub) | `status` | terminal lifecycle marker today; report/creator-packet artifacts are M11–M12 |
+| **D. Research Publishing** | `report`, `packet`, `publish` | `publishing.{reports,packets}`, `status` | a source-grounded `Report` (citations + non-omittable caveats) → a short-form `CreatorPacket` (hooks, angles, narratives + non-omittable warnings) → a `COMPLETED` lifecycle terminal |
 
 ### The band seam *is* the evidence-vs-inference seam
 
@@ -84,7 +85,7 @@ The happy path is a linear chain through the four bands, with one cycle in the
 Reasoning band (the revision loop) and a shared failure sink:
 
 ```
-plan → acquire → ingest → extract → verify → synthesize → critique → publish
+plan → acquire → ingest → extract → verify → synthesize → critique → report → packet → publish
                                                   ↑______________│ (revise)
 ```
 
@@ -100,30 +101,40 @@ Node by node (all wired in
 | `verify` | Reasoning | **Agent + Tool** | `build_claim_blocks` (tool) clusters related claims; `CrossVerificationAgent` judges each cluster into a `Verdict` (`PLANNING` role). |
 | `synthesize` | Reasoning | **Agent** | `SynthesisAgent` composes verdicts (+ sub-questions) into plan-anchored `Finding`s (`LONG_CONTEXT` role). |
 | `critique` | Reasoning | **Agent + Tool** | `uncovered_sub_question_ids` (tool) computes coverage gaps; `EditorialCriticAgent` judges synthesis quality (`PLANNING` role). |
-| `publish` | Publishing | **Stub** | Marks the job `COMPLETED`. Real report/export/creator-packet generation is M11–M12. |
+| `report` | Publishing | **Agent + Tools** | `ReportAgent` authors prose (title/abstract/sections); `assemble_citations` + `derive_caveats` (tools) attach a code-walked bibliography and a non-omittable caveats list (`LONG_CONTEXT` role). |
+| `packet` | Publishing | **Agent + Tool** | `CreatorPacketAgent` (the Short-Form Content Strategist) authors hooks/angles/narratives; `derive_creator_warnings` (tool) attaches code-derived key facts and non-omittable unsafe-claim warnings (`LONG_CONTEXT` role). |
+| `publish` | Publishing | **Lifecycle terminal** | Marks the job `COMPLETED` — the success mirror of the `failed` sink. The band's artifacts are produced upstream by `report`/`packet`; this node closes out the lifecycle. |
 | `failed` | Control | **Sink** | Terminal node for any node that raised; the failure `status`/`error` were already set before routing. |
 
 A note on what is **not** yet running, so the diagram is read honestly:
 
-- **Live search is not wired in.** `acquire` runs against a `FakeSearchProvider`;
-  the real adapter is roadmap milestone **M-LP.2**. Ingestion is **web-only**
-  today (PDF / YouTube / OCR are deferred — ADR 0008).
+- **Live search exists but is not wired into the running service.** Concrete
+  `SearchProvider` adapters (Tavily, Brave) now exist in code (M-LP.2), but the
+  composition root (`backend/app/services/composition.py`) does **not** connect
+  one — so the HTTP `/research` path raises `CompositionError` (503). The
+  hermetic test pipeline runs end-to-end against a `FakeSearchProvider`. See
+  [docs/operations.md](../operations.md#known-limitations).
+- **Ingestion is wired for WEB + PDF (text layer).** A `YouTubeTranscriptProvider`
+  adapter exists but is not wired into the composition-built service (YouTube
+  sources are skipped); scanned/image-PDF OCR is deferred (ADR 0008).
 - **Every node is a single-channel write.** The fan-out reducers and per-item
   concurrency that would let extraction or verification run N branches in
   parallel are deliberately deferred to the checkpointer milestone (ADR 0002 §6).
   Today each node makes its calls and writes its channel once.
-- **`publish` is a lifecycle stub.** It advances `status` to prove the
-  state-threading contract; it produces no artifacts yet.
+- **`publish` is a lifecycle terminal, not an artifact node.** It advances
+  `status` to `COMPLETED`; the band's `Report` and `CreatorPacket` artifacts are
+  produced upstream by `report` (M11) and `packet` (M12).
 
 ---
 
 ## 4. The LangGraph topology (with the revision cycle and failure sink)
 
-This diagram reflects the exact edge wiring in `build_research_graph`. The six
-linear bands each route on the job `status` (`continue` → next node, `failed` →
-the sink). The `critique` node is the exception: it routes on the editorial
-**decision** via a four-way router, including the back-edge that makes this the
-graph's first cycle.
+This diagram reflects the exact edge wiring in `build_research_graph`. Eight
+linear transitions each route on the job `status` (`continue` → next node,
+`failed` → the sink): the six pre-critique bands plus `report → packet` and
+`packet → publish`. The `critique` node is the exception: it routes on the
+editorial **decision** via a four-way router, including the back-edge that makes
+this the graph's first cycle.
 
 ```mermaid
 flowchart TD
@@ -138,9 +149,13 @@ flowchart TD
 
     %% Editorial Critic router (4-way) — the only non-status routing
     critique -->|revise| synthesize
-    critique -->|accept| publish
-    critique -->|exhausted| publish
+    critique -->|accept| report
+    critique -->|exhausted| report
     critique -->|failed| failed
+
+    %% Publishing band: report → packet → publish (status-routed)
+    report -->|continue| packet
+    packet -->|continue| publish
 
     publish --> END([END])
 
@@ -151,6 +166,8 @@ flowchart TD
     extract -.->|failed| failed
     verify -.->|failed| failed
     synthesize -.->|failed| failed
+    report -.->|failed| failed
+    packet -.->|failed| failed
 
     failed --> END
 
@@ -163,20 +180,23 @@ flowchart TD
     class plan control;
     class acquire,ingest,extract acquisition;
     class verify,synthesize,critique reasoning;
-    class publish publishing;
+    class report,packet,publish publishing;
     class failed sink;
 ```
 
 **How to read it against the code:**
 
 - **`START → plan`** and **`publish → END`** are unconditional `add_edge` calls.
-- The six **solid `continue` edges** and six **dashed `failed` edges** are the
-  `bands` tuple in `build_research_graph`: each `add_conditional_edges(source,
-  _route_on_status, {"continue": next, "failed": "failed"})`. `_route_on_status`
-  returns `"failed"` iff `state.status is JobStatus.FAILED`, else `"continue"`.
+- The **status-routed transitions** all share `_route_on_status`
+  (`add_conditional_edges(source, _route_on_status, {"continue": next, "failed":
+  "failed"})`, which returns `"failed"` iff `state.status is JobStatus.FAILED`,
+  else `"continue"`). The six pre-critique bands come from the `bands` tuple;
+  `report → packet` and `packet → publish` are two further explicit
+  `add_conditional_edges` calls after the critique router.
 - **`critique` has four outgoing edges**, from `_make_critique_router`:
-  `revise → synthesize` (the back-edge / cycle), `accept → publish`,
-  `exhausted → publish`, `failed → failed`.
+  `revise → synthesize` (the back-edge / cycle), `accept → report`,
+  `exhausted → report`, `failed → failed`. (Note the loop now exits to `report`,
+  not `publish` — the Publishing band sits between the loop and the terminal.)
 - **`publish` has no `failed` edge.** It is the last band and routes
   unconditionally to `END` — a publish-time failure still ends the run with
   `status=FAILED` set, just without passing through the sink (ADR 0005 §Neutral).
@@ -379,26 +399,30 @@ reader evaluating the engineering:
 
 ## 7. What's next
 
-The engine is complete through the Knowledge Reasoning band. The roadmap
-([docs/ROADMAP.md](../ROADMAP.md)) sequences what remains:
+The Deep Research engine is complete end-to-end through the Research Publishing
+band (M1–M12): a topic now flows all the way to a source-grounded `Report` (M11)
+and a short-form `CreatorPacket` (M12). The publishing band is traced node by
+node in its [companion deep-dive](band-publishing.md). What remains is the
+*last mile* — connecting the built pieces to a running service and turning the
+creator packet into an actual video. The roadmap ([docs/ROADMAP.md](../ROADMAP.md))
+sequences it:
 
-- **M11 — Report + structured export.** Turn the `Synthesis` + `Critique` into a
-  research report, an evidence map, and a contradiction/caveat list. The
-  non-omittable `disputed`/`weakest_support` flags from Section 5.4 are exactly
-  the inputs this band surfaces.
-- **M12 — Creator packet + downstream handoff.** Hooks, content angles, key
-  facts, narrative options, and explicit unsafe/unverified-claim warnings — the
-  artifacts the Media Production layer consumes to build a video. This replaces
-  the `publish` stub.
-- **M-LP — Live provider adapters.** A real `SearchProvider` (M-LP.2) unblocks
-  source discovery end-to-end; provider-SDK adapters (M-LP.3) are a fallback if
-  free-model JSON reliability proves insufficient. The LLM adapter (M-LP.1) is
-  already done — the Planner runs against a real free model today.
-- **Beyond Deep Research — the Media Production layer.** TTS, subtitles,
-  image/video generation, and FFmpeg-based composition (CLAUDE.md §3.3),
-  consuming the M12 creator packet as its input contract.
+- **Wire live providers into the running service.** The LLM adapter (M-LP.1) is
+  done — the Planner runs against a real free model today. Concrete
+  `SearchProvider` adapters (Tavily, Brave — M-LP.2) now exist but are **not yet
+  connected** to the composition root, so the HTTP `/research` path returns 503;
+  closing that hole unblocks an end-to-end research run over real sources.
+- **The Media Production layer (CLAUDE.md §3.3) — the second major component.**
+  Provider-neutral, deterministic media **tools** are seam-scaffolded with
+  several concrete adapters already built (FFmpeg composition, an HTTP TTS
+  adapter, a stock B-roll retrieval adapter), and a `MediaPipeline` tool maps a
+  `CreatorPacket → MediaPlan`. These are not yet wired into an end-to-end runner,
+  and real TTS/visual provider selection is still network-gated.
+- **Surface (M13).** A submit/async-job API and a React results UI render the
+  findings (with their honest `disputed`/`weakest_support` flags) and the
+  publishing artifacts; streaming progress and a durable job store are deferred.
 
-Two known limits are worth stating plainly. The eventual revision loop can only
+Two known limits are worth stating plainly. The revision loop can only
 fix *synthesis-layer* defects (composition, overstated prose, an ignored
 verdict); a coverage gap rooted in *missing evidence* needs a loop back to
 `acquire`/`extract`, which reopens the fan-out accumulation problem and is gated
@@ -420,5 +444,7 @@ consumers, not oversights.
   0002 (LangGraph contract), 0003 (model fabric), 0004 (DI), 0005 (error
   handling), 0006 (source discovery), 0007 (LLM adapter), 0008 (ingestion),
   0009 (extraction), 0010 (cross-verification), 0011 (synthesis), 0012 (critic +
-  revision loop).
+  revision loop), 0017 (report generation), 0018 (creator packet).
+- Band deep-dives: [knowledge-acquisition](band-knowledge-acquisition.md),
+  [knowledge-reasoning](band-knowledge-reasoning.md), [publishing](band-publishing.md).
 - Roadmap: [docs/ROADMAP.md](../ROADMAP.md)
