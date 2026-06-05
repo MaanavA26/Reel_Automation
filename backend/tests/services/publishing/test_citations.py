@@ -7,6 +7,10 @@ sources are grouped, and contradicting evidence of a disputed finding is cited t
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from app.schemas.research_state import (
     Evidence,
     Finding,
@@ -89,9 +93,16 @@ def test_dangling_ids_are_skipped() -> None:
     assert citations == []
 
 
-def test_evidence_without_resolvable_source_is_skipped() -> None:
-    # evidence resolves but its source is absent → no source_type → not emitted.
+def test_evidence_without_resolvable_source_is_dropped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # evidence resolves but its source is absent → the citation is dropped, and
+    # the drop is logged (not silent) so it is an observable signal.
     evidence = [_evidence("ev_1", "src_gone")]
     verdicts = [_verdict("vd_1", supporting=["ev_1"])]
-    citations = assemble_citations([_finding(["vd_1"])], verdicts, evidence, [])
+    with caplog.at_level(logging.WARNING, logger="app.services.publishing.citations"):
+        citations = assemble_citations([_finding(["vd_1"])], verdicts, evidence, [])
     assert citations == []
+    assert any("src_gone" in r.getMessage() and "ev_1" in r.getMessage() for r in caplog.records), (
+        "a dropped citation for a missing source must log a warning"
+    )

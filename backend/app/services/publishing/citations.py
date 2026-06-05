@@ -8,9 +8,17 @@ bibliography. The model authors no part of this, so a published report can never
 cite a source that does not exist (the §11 guard, one layer past M9/M10). A
 verdict's *contradicting* evidence is walked alongside its supporting evidence,
 so a conflicting source is cited rather than hidden. See ADR 0017.
+
+Dropping contract: evidence whose ``source_id`` does not resolve to a real
+`Source` is *dropped with a logged warning* (never silently). A `Citation`
+snapshots the source url/title for export, so it must rest on a resolved source;
+the `Evidence`-only snapshot is not a sufficient substitute. The warning makes a
+dropped citation an observable signal rather than a silent gap.
 """
 
 from __future__ import annotations
+
+import logging
 
 from app.schemas.research_state import (
     Citation,
@@ -20,6 +28,8 @@ from app.schemas.research_state import (
     SourceType,
     Verdict,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def assemble_citations(
@@ -33,8 +43,10 @@ def assemble_citations(
     Walks each finding's supporting verdicts → their supporting *and*
     contradicting evidence → the backing sources, grouping into one `Citation`
     per distinct source (in first-seen order — deterministic given the input
-    order). Dangling ids (a verdict/evidence/source not in the provided sets) are
-    skipped, so the bibliography only ever references real, resolvable sources.
+    order). Dangling ids (a verdict/evidence not in the provided sets) are
+    skipped silently; evidence whose source is *missing* is dropped with a logged
+    warning (it cannot be snapshotted into an export-readable citation). The
+    bibliography therefore only ever references real, resolvable sources.
     """
     verdict_by_id = {v.id: v for v in verdicts}
     evidence_by_id = {e.id: e for e in evidence}
@@ -56,16 +68,25 @@ def assemble_citations(
                 acc = by_source.get(ev.source_id)
                 if acc is None:
                     src = source_by_id.get(ev.source_id)
+                    if src is None:
+                        # A citation must snapshot a resolved source; an unresolved
+                        # source cannot be cited. Warn so the drop is observable.
+                        logger.warning(
+                            "Dropping citation for evidence %s: source %s not in sources",
+                            ev.id,
+                            ev.source_id,
+                        )
+                        continue
                     acc = _CitationAccumulator(
                         source_id=ev.source_id,
-                        source_url=src.url if src is not None else ev.source_url,
-                        source_type=src.type if src is not None else None,
-                        title=src.title if src is not None else None,
+                        source_url=src.url,
+                        source_type=src.type,
+                        title=src.title,
                     )
                     by_source[ev.source_id] = acc
                 acc.add(evidence_id=ev.id, verdict_id=verdict.id)
 
-    return [acc.build() for acc in by_source.values() if acc.source_type is not None]
+    return [acc.build() for acc in by_source.values()]
 
 
 class _CitationAccumulator:
@@ -76,7 +97,7 @@ class _CitationAccumulator:
         *,
         source_id: str,
         source_url: str,
-        source_type: SourceType | None,
+        source_type: SourceType,
         title: str | None,
     ) -> None:
         self.source_id = source_id
@@ -93,8 +114,8 @@ class _CitationAccumulator:
             self._verdict_ids.append(verdict_id)
 
     def build(self) -> Citation:
-        # Only called for accumulators with a resolved source (filtered above).
-        assert self.source_type is not None
+        # Every accumulator has a resolved source by construction (evidence with
+        # an unresolved source is dropped before an accumulator is created).
         return Citation(
             source_id=self.source_id,
             source_url=self.source_url,

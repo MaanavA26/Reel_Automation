@@ -13,6 +13,7 @@ from fastapi import Request
 
 from app.services.composition import build_research_deps
 from app.services.jobs import JobStore
+from app.services.video import VideoJobStore, VideoPipeline, build_video_pipeline
 from app.workflows.deep_research import ResearchDeps
 
 
@@ -38,4 +39,27 @@ def get_job_store(request: Request) -> JobStore:
     per-app isolation without an override.
     """
     store: JobStore = request.app.state.job_store
+    return store
+
+
+def get_video_pipeline() -> VideoPipeline:
+    """Provide the end-to-end `VideoPipeline` (request-time, overridable).
+
+    Mirrors `get_research_deps`: construction is lazy (per call) via the
+    composition root, so the app boots even before a live model/search/TTS
+    backend is configured, and tests override this provider with a fake-backed
+    pipeline before the first request. An unconfigured backend surfaces as a
+    `CompositionError` mapped to 503 at the seam.
+    """
+    return build_video_pipeline()
+
+
+def get_video_job_store(request: Request) -> VideoJobStore:
+    """Provide the process-singleton `VideoJobStore` held on ``app.state``.
+
+    The video-band analogue of `get_job_store`: stateful, one instance per
+    process (enqueue and read must hit the same dict), created once in
+    `app.main.create_app` and read off ``request.app.state`` here.
+    """
+    store: VideoJobStore = request.app.state.video_job_store
     return store

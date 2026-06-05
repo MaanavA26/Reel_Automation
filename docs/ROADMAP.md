@@ -282,6 +282,18 @@
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
+- ✅ **Publishing-support surface — SEO metadata + thumbnail.** `backend/app/seo/` +
+  `backend/app/media/thumbnail.py` (CLAUDE.md §3.4): turn a `CreatorPacket` (+ source `Report`) into the
+  title / description / tags / hashtags and a thumbnail image that drive views. Both deterministic **tools**.
+  `MetadataBuilder` is a pure value derivation → a `VideoMetadata` value DTO (`produced_via="seo:deterministic"`):
+  title ≤100 chars (enforced invariant, word-boundary truncation), description hook→key-points→deduped-sources→
+  hashtags, stdlib stopword-tag floor, hashtags capped at 5 (verified: YouTube drops all >15). §11 carried to the
+  headline — a disputed hook/fact is never promoted to the title (transparency markers in the body instead).
+  `ThumbnailRenderer` mirrors the ffmpeg adapter (ADR 0023): pure `build_thumbnail_args` (frame extract + scale/pad +
+  `drawtext` from a `textfile=` sidecar, only the path escaped) split from a mockable `_run`; reuses
+  `resolve_local_path`; `fontfile` + dimensions parameterized (default 1280×720). One `ThumbnailError`. Hermetic
+  argv/error tests + a two-condition (`ffmpeg`+font) `@pytest.mark.integration` real render. No wiring/config/dep
+  change. LLM-polished copy deferred. [ADR 0039](adrs/0039-seo-thumbnail.md).
 
 ## Publishing / Social-Ops Layer (CLAUDE.md §3.4 — fourth major component)
 > Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Uploads a finished
@@ -321,6 +333,22 @@
 - 🔨 **Driver loop + real wiring (deferred).** The long-lived `while: sleep until next_run; drain;
   run_batch` process (the only piece touching a real clock/sleep) and the binding of `Produce` to the
   real `VideoPipeline` + publishing step — the follow-up that makes the loop runnable end-to-end.
+
+## End-to-end video pipeline (the linchpin — CLAUDE.md §1/§3)
+- ✅ **M-EE — Topic → finished video.** `VideoPipeline` (`backend/app/services/video/`) — a deterministic
+  *service* (CLAUDE.md §4) chaining the two finished subsystems: `topic → run_research → CreatorPacket →
+  MediaPipeline → MediaPlan → VideoArtifact` (uri + metadata + re-join ids). DI of both collaborator
+  bundles (`ResearchDeps`, a new `MediaDeps`); the load-bearing handoff guard raises `VideoPipelineError`
+  unless the research run COMPLETED with a narratable packet (never indexes an empty `packets` list).
+  **Composition root now wires real providers** (`build_research_deps` stops raising): model by
+  `default_provider` (openai-compatible / gemini / registry preset, re-keyed so the policy resolves),
+  search by a new `search_provider` setting (tavily / brave); a missing key fails loud as
+  `CompositionError` (503). Surfaces: `python -m app.cli.make_video "<topic>"` + `POST /api/v1/videos`
+  (sync) + async `POST /api/v1/videos/jobs` & `GET …/jobs/{id}` (a `VideoJobStore`, ADR 0031 model).
+  Fully hermetic e2e (Fake providers: no network/LLM/ffmpeg/PyPI); the live render is config + ffmpeg-binary
+  gated (needs LLM + search + TTS keys, and a stock key + a `VisualSink` that fetches remote B-roll to local
+  `file://` files for the ≥1 visual ffmpeg requires). Additive —
+  Deep Research / Media internals + `factory.py` untouched. [ADR 0032](adrs/0032-end-to-end-video-pipeline.md).
 
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
@@ -377,6 +405,20 @@
     fake asserts retry count + fallback). Capability only, no wiring. Reconciles with ADR 0005's
     node-level `RetryPolicy` (provider-level composes *under* the node); the "when to give up" judgment
     stays with the Orchestrator. [ADR 0027](adrs/0027-llm-resilience.md).
+
+## Style / brand memory (CLAUDE.md §3.4 — future layer)
+- ✅ **Channel / brand profiles.** `backend/app/channels/` — per-channel config so the operator
+  runs several faceless channels on-brand: a strict, `chan_`-prefixed `ChannelProfile` (niche +
+  `topic_seeds`, non-empty `platforms`, `tts_voice_id`, `tone`/`persona`, `posting_cadence`,
+  `banned_topics`, `Branding`) read by topic-sourcing/scripting/TTS/SEO, plus a `ChannelStore`
+  **`Protocol`** seam (`TTSProvider`/`SearchProvider` idiom) with an async, in-memory
+  `InMemoryChannelStore` (CRUD, one `asyncio.Lock`, store-owned `updated_at` bump like `JobStore`)
+  and a pre-seedable, call-recording `FakeChannelStore`. Deterministic config/tool, not an agent
+  (CLAUDE.md §4). [ADR 0042](adrs/0042-channel-profiles.md).
+- ⬜ **Durable channel store (deferred).** A `Protocol`-implementing `SqlChannelStore` (or similar)
+  for cross-worker/persistent profiles; drops in without touching consumers.
+- ⬜ **Channels API / CLI + pipeline wiring (deferred).** Expose CRUD over HTTP/CLI and let the
+  research/media steps read the active channel's profile; needs a consumer first.
 
 ## Ops / Infrastructure
 - ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn

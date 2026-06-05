@@ -36,7 +36,10 @@ class QualityScore(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    score: float = Field(description="Quality on the judge's scale (higher is better).")
+    # Lower-bounded at 0: the rubric is a 0..scale scale, so a negative score is
+    # meaningless and would corrupt candidate ranking. No upper bound — `scale` is
+    # judge-configurable and not visible at this type.
+    score: float = Field(ge=0, description="Quality on the judge's scale (higher is better).")
     rationale: str | None = Field(default=None, description="Why this score.")
 
 

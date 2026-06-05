@@ -17,7 +17,7 @@ import asyncio
 from collections.abc import Callable, Iterator
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.eval import (
     EvalConfigError,
@@ -127,6 +127,17 @@ def test_mixed_pass_and_fail_aggregates_to_a_rate() -> None:
         harness.run(tasks=[_task("t1"), _task("t2")], candidates=[ModelChoice("p", "m")])
     )
     assert report.results[0].schema_pass_rate == pytest.approx(0.5)
+
+
+# --- quality score bounds ----------------------------------------------------
+
+
+def test_negative_quality_score_is_rejected() -> None:
+    # The rubric is a 0..scale scale; a negative score is meaningless and would
+    # corrupt ranking, so it is rejected at construction (ge=0). No upper bound.
+    with pytest.raises(ValidationError):
+        QualityScore(score=-1.0)
+    assert QualityScore(score=0.0).score == 0.0  # the lower bound is inclusive
 
 
 # --- rule-based (hermetic default) judge -------------------------------------

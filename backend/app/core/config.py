@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # via .env / env vars for live use. See .env.example.
     search_api_key: SecretStr = SecretStr("")
 
+    # Which `SearchProvider` adapter the composition root wires (ADR 0032).
+    # `"tavily"` reads `search_api_key`; `"brave"` reads `brave_api_key` — so the
+    # operator selects a backend by name and supplies only that backend's key,
+    # mirroring the LLM provider-registry stance (CLAUDE.md §6). An unknown name
+    # or a missing key surfaces as a clear `CompositionError` at wiring time.
+    search_provider: str = "tavily"
+
     # Search fabric (used by the live `SearchProvider` adapters; CLAUDE.md §4).
     # `brave_api_key` configures the Brave Web Search adapter (ADR 0021) and is
     # kept distinct from the LLM `api_key` (and from any other search provider's
@@ -69,6 +76,20 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr = SecretStr("")
     nvidia_api_key: SecretStr = SecretStr("")
     huggingface_api_key: SecretStr = SecretStr("")
+
+    # Media production fabric (ADR 0032): the end-to-end video pipeline's
+    # deterministic media seams. The TTS adapter (`HttpTtsProvider`) speaks a
+    # generic REST endpoint selected by base_url + key; the stock visual adapter
+    # (`StockVisualProvider`, ADR 0024) needs its own key. All SecretStr so they
+    # never leak into logs/reprs; empty by default — set the ones you use for a
+    # live render. Composition shells out to the `ffmpeg` binary (ADR 0023), which
+    # is required for a live render but not for the hermetic fake-backed path.
+    tts_base_url: str = ""
+    tts_api_key: SecretStr = SecretStr("")
+    tts_voice: str = "narrator"
+    stock_api_key: SecretStr = SecretStr("")
+    # Where rendered audio + video artifacts are written by the live media seams.
+    media_output_dir: str = "renders"
 
 
 @lru_cache(maxsize=1)
