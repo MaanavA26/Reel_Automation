@@ -13,6 +13,8 @@ are not yet part of a tagged release. When cutting a release, move the
 
 ### Added
 
+- Operations + configuration reference (`docs/operations.md`, `docs/configuration.md`) — an operator guide: running locally (Makefile + `.venv`) and via Docker/Compose, the full `REEL_AUTOMATION_*` environment-variable reference derived from `backend/app/core/config.py`, the provider matrix (LLM / search / ingestion) distinguishing wired-and-selectable adapters from scaffolded-but-inert ones, and the known operational limitations (default `/research` 503, single-process in-memory job model, network-gated live tests, offline-build caveats). Documentation only; no code change.
+
 - Deep Research engineering showcase write-up (`docs/showcase/deep-research-architecture.md`) — a public-facing narrative of the engine as built (M1–M10b): the four bands, the full node pipeline, an accurate Mermaid of the LangGraph topology (revision cycle + failure sink), and the §11 evidence-vs-inference "made structural" pattern across all five agents. Documentation only; no code change. Supports CLAUDE.md §12 (public showcase goal).
 
 - Apache License 2.0. `LICENSE` file at repo root; SPDX metadata in `backend/pyproject.toml` and `frontend/package.json`; reference in README.
