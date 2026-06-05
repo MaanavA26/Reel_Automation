@@ -25,6 +25,15 @@
   model selection (`services/llm/`): `ModelProvider` protocol, `ModelRouter`/`RolePolicy`,
   config-sourced `default_policy`, hermetic `FakeProvider`. Concrete Anthropic adapter
   deferred to M3 (its first consumer). [ADR 0003](adrs/0003-model-router-llm-fabric.md).
+- ✅ **M2-Eval — LLM-as-judge eval harness.** `backend/app/eval/` — the reusable,
+  offline-testable scaffold for "which model is best for role X" (CLAUDE.md §6),
+  productizing the by-hand eval in [`docs/llm-model-selection.md`](llm-model-selection.md)
+  (§6 "make it reproducible"). A deterministic *service*: `EvalHarness` runs explicit
+  `(provider, model)` candidates across schema-bound `EvalTask`s, validates output, times
+  via an injected clock, scores quality with a pluggable `Judge` (rule-based default +
+  optional `ModelJudge` with a structural self-judge guard), and ranks via typed
+  `EvalResult`/`EvalReport` (`best_choice()` → a `ModelChoice` for a policy). Hermetic via
+  `FakeProvider`; live runner + CLI deferred. [ADR 0029](adrs/0029-llm-eval-harness.md).
 
 ## Research Control band
 - ✅ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node:
