@@ -25,6 +25,7 @@ from collections.abc import Callable
 
 import httpx
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.services.ingestion.base import FetchedContent, FetchError
 
 _DEFAULT_UA = "ReelAutomationBot/0.1 (+research ingestion)"
@@ -64,7 +65,7 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
-class HttpxFetchProvider:
+class HttpxFetchProvider(CloseOwnedClientMixin):
     """Fetches URLs over HTTP with hardened defaults."""
 
     name = "httpx"
@@ -83,6 +84,7 @@ class HttpxFetchProvider:
         self._max_redirects = max_redirects
         self._user_agent = user_agent
         self._resolver = resolver or _default_resolver
+        self._owns_client = client is None
         # Redirects are handled manually (per-request follow_redirects=False) so
         # the SSRF/scheme guard re-runs on every hop; the client default is moot.
         self._client = client or httpx.AsyncClient(
