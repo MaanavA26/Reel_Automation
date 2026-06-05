@@ -334,6 +334,22 @@
   run_batch` process (the only piece touching a real clock/sleep) and the binding of `Produce` to the
   real `VideoPipeline` + publishing step — the follow-up that makes the loop runnable end-to-end.
 
+## End-to-end video pipeline (the linchpin — CLAUDE.md §1/§3)
+- ✅ **M-EE — Topic → finished video.** `VideoPipeline` (`backend/app/services/video/`) — a deterministic
+  *service* (CLAUDE.md §4) chaining the two finished subsystems: `topic → run_research → CreatorPacket →
+  MediaPipeline → MediaPlan → VideoArtifact` (uri + metadata + re-join ids). DI of both collaborator
+  bundles (`ResearchDeps`, a new `MediaDeps`); the load-bearing handoff guard raises `VideoPipelineError`
+  unless the research run COMPLETED with a narratable packet (never indexes an empty `packets` list).
+  **Composition root now wires real providers** (`build_research_deps` stops raising): model by
+  `default_provider` (openai-compatible / gemini / registry preset, re-keyed so the policy resolves),
+  search by a new `search_provider` setting (tavily / brave); a missing key fails loud as
+  `CompositionError` (503). Surfaces: `python -m app.cli.make_video "<topic>"` + `POST /api/v1/videos`
+  (sync) + async `POST /api/v1/videos/jobs` & `GET …/jobs/{id}` (a `VideoJobStore`, ADR 0031 model).
+  Fully hermetic e2e (Fake providers: no network/LLM/ffmpeg/PyPI); the live render is config + ffmpeg-binary
+  gated (needs LLM + search + TTS keys, and a stock key + a `VisualSink` that fetches remote B-roll to local
+  `file://` files for the ≥1 visual ffmpeg requires). Additive —
+  Deep Research / Media internals + `factory.py` untouched. [ADR 0032](adrs/0032-end-to-end-video-pipeline.md).
+
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
   - ✅ **M-LP.1 (LLM):** `OpenAICompatibleProvider` (httpx, OpenAI `/chat/completions`) —

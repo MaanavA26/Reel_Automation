@@ -9,6 +9,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.services.composition import CompositionError
 from app.services.jobs import JobStore
+from app.services.video import VideoJobStore
 
 
 def create_app() -> FastAPI:
@@ -24,6 +25,9 @@ def create_app() -> FastAPI:
     # POST /research/jobs and GET /research/jobs/{id} handlers share state and a
     # restart is the (documented, in-memory) reset boundary. ADR 0031.
     application.state.job_store = JobStore()
+    # The video-band async surface gets its own process-singleton store (ADR 0032),
+    # symmetric with the research job store above.
+    application.state.video_job_store = VideoJobStore()
     return application
 
 
