@@ -1,0 +1,20 @@
+# Build context hygiene for frontend/Dockerfile.
+# node_modules and dist are rebuilt inside the image from the lockfile, so
+# excluding them keeps the context small and the build reproducible.
+
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS noise
+.git/
+.gitignore
+.DS_Store
+
+# Local logs
+npm-debug.log*

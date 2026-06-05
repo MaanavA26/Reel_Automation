@@ -10,7 +10,10 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.research_state import (
+    Caveat,
+    CaveatKind,
     Chunk,
+    Citation,
     Critique,
     CritiqueDecision,
     Evidence,
@@ -20,7 +23,10 @@ from app.schemas.research_state import (
     KnowledgeReasoningState,
     QualityIssue,
     QualityIssueKind,
+    Report,
+    ReportSection,
     ResearchPlan,
+    ResearchPublishingState,
     ResearchState,
     Source,
     SourceType,
@@ -51,6 +57,23 @@ def test_research_state_defaults() -> None:
     assert isinstance(state.reasoning.synthesis, Synthesis)
     assert state.reasoning.synthesis.findings == []
     assert state.reasoning.critiques == []
+    assert isinstance(state.publishing, ResearchPublishingState)
+    assert state.publishing.reports == []
+
+
+def test_report_roundtrips_under_strict_schema() -> None:
+    # M11: a Report carries model prose + code-derived citations/caveats; it must
+    # round-trip under extra="forbid".
+    report = Report(
+        title="T",
+        abstract="A",
+        sections=[ReportSection(heading="H", narrative="N", finding_ids=["fnd_1"])],
+        citations=[Citation(source_id="src_1", source_url="https://x", source_type=SourceType.WEB)],
+        caveats=[Caveat(kind=CaveatKind.WEAK_SUPPORT, detail="thin", finding_ids=["fnd_1"])],
+        published_via="report:fake-model",
+    )
+    assert report.id.startswith("rpt_")
+    assert Report.model_validate(report.model_dump()) == report
 
 
 def test_critique_roundtrips_under_strict_schema() -> None:
