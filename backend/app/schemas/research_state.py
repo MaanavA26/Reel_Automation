@@ -392,21 +392,142 @@ class Report(BaseModel):
     published_via: str
 
 
-class ResearchPublishingState(BaseModel):
-    """State produced by the Research Publishing band of Deep Research (M11).
+class CreatorWarning(BaseModel):
+    """A code-derived unsafe/unverified-claim warning on a creator packet (M12).
 
-    ``reports`` is a list (not a single `Report`) — forced, not chosen, by the
-    same constraints as `KnowledgeReasoningState.critiques`: a `Report` has
-    required fields so it cannot be a ``default_factory`` default, and
-    ``| None`` is barred by ADR 0001's no-None-defaults rule. The empty list is
-    the "publish has not run" signal, and it gives a re-publish/regeneration
-    audit trail for free. A job is conceptually single-report; the list is a
-    mechanical consequence of those constraints.
+    The §11 keystone of the creator packet, one layer past M11's `Caveat`: the
+    model gets **no field** to author or omit this. Derived at packet time from
+    the *full* synthesis findings (disputed / single-source) — independent of
+    which findings the creative elements (hooks/angles/narratives) happen to
+    reference — so a punchy hook can never quietly rest on a contradicted or
+    thinly-supported finding without the warning surfacing. The cross-reference
+    to a creative element is by **shared ``finding_ids``** (the element's
+    code-resolved findings intersected with a warning's findings), exactly as a
+    `Caveat` carries ``finding_ids``. Reuses M11's disputed/single-source
+    predicate (`finding_caveat_kind`) so the two never drift. ``detail`` is
+    code-templated, not model prose. See ADR 0018.
+    """
+
+    model_config = _STRICT
+
+    kind: CaveatKind  # always a finding-level kind: DISPUTED_FINDING | WEAK_SUPPORT
+    detail: str
+    finding_ids: list[str] = Field(default_factory=list)
+
+
+class HookIdea(BaseModel):
+    """A model-authored opening hook for a short-form video (M12).
+
+    Prose authored by the Short-Form Content Strategist; ``finding_ids`` are
+    **code-attached** from local indices into the numbered findings list the
+    model was shown (out-of-range dropped). A single index space (findings only),
+    so the M9 two-index hazard cannot arise — the report is given to the model as
+    prose *context*, not as a second index space. A hook is grounded in ≥1 real
+    finding; one resolving to zero is dropped (the M9/M11 drop-empty guard). No id
+    at v1 (a sub-unit of `CreatorPacket`).
+    """
+
+    model_config = _STRICT
+
+    text: str
+    finding_ids: list[str] = Field(default_factory=list)
+
+
+class ContentAngle(BaseModel):
+    """A model-authored framing/angle for the topic (M12).
+
+    Same contract as `HookIdea`: prose + a short rationale, ``finding_ids``
+    code-attached from local indices (out-of-range dropped; zero-finding angle
+    dropped). The cross-reference to a `CreatorWarning` is by shared
+    ``finding_ids``.
+    """
+
+    model_config = _STRICT
+
+    angle: str
+    rationale: str
+    finding_ids: list[str] = Field(default_factory=list)
+
+
+class NarrativeOption(BaseModel):
+    """A model-authored short-form narrative arc option (M12).
+
+    A candidate full-video narrative (a beat-by-beat ``script_outline``) the
+    creator can pick from. ``finding_ids`` code-attached from local indices
+    (out-of-range dropped; zero-finding option dropped). The §11 boundary is the
+    same as the other creative elements: the model authors prose only; grounding
+    is code-resolved and any unsafe-claim warning is code-derived and travels by
+    shared ``finding_ids``.
+    """
+
+    model_config = _STRICT
+
+    title: str
+    script_outline: str
+    finding_ids: list[str] = Field(default_factory=list)
+
+
+class KeyFact(BaseModel):
+    """A code-derived key fact for a creator packet (M12).
+
+    Not model prose: projected directly from a `Finding` (its ``statement`` +
+    the code-derived ``disputed`` / ``weakest_support`` grounding), so a packet's
+    fact sheet can never overstate or invent past the synthesized findings (§11).
+    Retains ``finding_id`` for re-join to the full provenance chain.
+    """
+
+    model_config = _STRICT
+
+    statement: str
+    finding_id: str
+    disputed: bool
+    weakest_support: SupportLevel
+
+
+class CreatorPacket(BaseModel):
+    """A short-form creator packet — the band-D handoff artifact for media (M12).
+
+    The Short-Form Content Strategist's output (CLAUDE.md §5.4/§5.6): turns the
+    `Report` + reasoning into creator-ready material for a faceless short-form
+    video — hook ideas, content angles, short narrative options, key facts, and
+    **code-derived unsafe/unverified-claim warnings**. The §11 boundary is held
+    one layer past M11: the model authors only the creative prose (hooks/angles/
+    narratives) referencing findings by local index; code resolves + validates the
+    ids (fabricated dropped); and ``key_facts`` + ``warnings`` are **code-derived**
+    (the model gets no field for either). A thin / heavily-warned packet is valid,
+    not a failure. See ADR 0018.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("pkt"))
+    report_id: str  # the source Report this packet was built from (re-join)
+    hooks: list[HookIdea] = Field(default_factory=list)
+    angles: list[ContentAngle] = Field(default_factory=list)
+    narratives: list[NarrativeOption] = Field(default_factory=list)
+    key_facts: list[KeyFact] = Field(default_factory=list)
+    warnings: list[CreatorWarning] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    published_via: str
+
+
+class ResearchPublishingState(BaseModel):
+    """State produced by the Research Publishing band of Deep Research (M11, M12).
+
+    ``reports`` (M11) and ``packets`` (M12) are lists (not single objects) —
+    forced, not chosen, by the same constraints as
+    `KnowledgeReasoningState.critiques`: each artifact has required fields so it
+    cannot be a ``default_factory`` default, and ``| None`` is barred by ADR 0001's
+    no-None-defaults rule. The empty list is the "this band step has not run"
+    signal, and it gives a re-publish/regeneration audit trail for free. A job is
+    conceptually single-report / single-packet; the lists are a mechanical
+    consequence of those constraints.
     """
 
     model_config = _STRICT
 
     reports: list[Report] = Field(default_factory=list)
+    packets: list[CreatorPacket] = Field(default_factory=list)
 
 
 class SubQuestion(BaseModel):

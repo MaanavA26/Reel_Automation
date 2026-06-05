@@ -24,6 +24,30 @@ from app.schemas.research_state import (
 )
 
 
+def finding_caveat_kind(finding: Finding) -> CaveatKind | None:
+    """Classify a single finding's grounding into a finding-level caveat kind.
+
+    Returns ``DISPUTED_FINDING`` for a contradicted finding, ``WEAK_SUPPORT`` for
+    a (non-disputed) single-source finding, or ``None`` for a cleanly-corroborated
+    one. The **single** predicate over a finding's code-derived grounding flags,
+    shared by the report's `derive_caveats` (M11) and the creator packet's
+    `derive_creator_warnings` (M12) so the two surfaces can never drift on what
+    counts as unsafe/unverified. See ADR 0018.
+    """
+    if finding.disputed:
+        return CaveatKind.DISPUTED_FINDING
+    if finding.weakest_support is SupportLevel.SINGLE_SOURCE:
+        return CaveatKind.WEAK_SUPPORT
+    return None
+
+
+def _finding_caveat_detail(kind: CaveatKind, finding: Finding) -> str:
+    """Code-templated detail string for a finding-level caveat/warning kind."""
+    if kind is CaveatKind.DISPUTED_FINDING:
+        return f"Finding rests on contradictory sources: {finding.statement}"
+    return f"Finding is supported by a single source: {finding.statement}"
+
+
 def derive_caveats(findings: list[Finding], latest_critique: Critique | None) -> list[Caveat]:
     """Derive the report's caveats from the full findings + the latest critique.
 
@@ -37,19 +61,12 @@ def derive_caveats(findings: list[Finding], latest_critique: Critique | None) ->
     caveats: list[Caveat] = []
 
     for finding in findings:
-        if finding.disputed:
+        kind = finding_caveat_kind(finding)
+        if kind is not None:
             caveats.append(
                 Caveat(
-                    kind=CaveatKind.DISPUTED_FINDING,
-                    detail=f"Finding rests on contradictory sources: {finding.statement}",
-                    finding_ids=[finding.id],
-                )
-            )
-        elif finding.weakest_support is SupportLevel.SINGLE_SOURCE:
-            caveats.append(
-                Caveat(
-                    kind=CaveatKind.WEAK_SUPPORT,
-                    detail=f"Finding is supported by a single source: {finding.statement}",
+                    kind=kind,
+                    detail=_finding_caveat_detail(kind, finding),
                     finding_ids=[finding.id],
                 )
             )

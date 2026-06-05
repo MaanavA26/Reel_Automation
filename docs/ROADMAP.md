@@ -108,7 +108,18 @@
   ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
   (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
   creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
-- ⬜ **M12 — Creator packet + downstream handoff artifacts.** Hooks, angles, key facts, narrative options; unsafe-claim warnings.
+- ✅ **M12 — Creator packet + downstream handoff artifacts.** Report + findings → a short-form
+  `CreatorPacket` (`CreatorPacketAgent`, the Short-Form Content Strategist, `LONG_CONTEXT` role) —
+  hook ideas, content angles, short narrative options (model creative prose) + **code-derived key
+  facts** + a **code-derived, non-omittable unsafe/unverified-claim warnings list**. Agent/tool
+  split: creative prose is the agent; `services/publishing/warnings.py` is deterministic, reusing
+  M11's `finding_caveat_kind` predicate (no drift). §11 keystone, mirrored one layer up: warnings
+  range over the **full** findings set (so an uncited disputed finding still surfaces a warning),
+  tied to a hook/angle/narrative by **shared `finding_ids`**; the model authors no facts or
+  warnings. Single finding index space (the report is prose context, not a second index space).
+  New `CreatorPacket`/`HookIdea`/`ContentAngle`/`NarrativeOption`/`KeyFact`/`CreatorWarning` schema
+  + `publishing.packets`; dedicated `packet` node (`…→report→packet→publish`); 9th `ResearchDeps`
+  field. A thin/heavily-warned packet is valid, not a failure. [ADR 0018](adrs/0018-creator-packet.md).
 
 ## Surface
 - ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
