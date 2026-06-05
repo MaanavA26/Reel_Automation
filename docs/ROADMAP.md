@@ -98,7 +98,16 @@
   (no change to the M10a `Critique`/reasoning schema). [ADR 0012](adrs/0012-editorial-critic.md).
 
 ## Knowledge Publishing band
-- ⬜ **M11 — Report + structured export generation.** Research report, evidence map, contradiction/caveat list.
+- ✅ **M11 — Report generation.** Reasoning output → a structured, source-grounded `Report`
+  (`ReportAgent`, `LONG_CONTEXT` role) — title/abstract/sections (model prose) + a code-derived
+  citation bibliography (walked `Finding→Verdict→Evidence→Source`, snapshotted for export) + a
+  **code-derived, non-omittable caveats list**. Agent/tool split: prose is the agent;
+  `services/publishing/` (citations, caveats) is deterministic. §11 keystone: caveats range over
+  the **full** findings set (so an uncited disputed finding still surfaces) and the
+  `UNRESOLVED_CRITIQUE` banner fires when the revision loop exhausted unsatisfied (fulfilling
+  ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
+  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
+  creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
 - ⬜ **M12 — Creator packet + downstream handoff artifacts.** Hooks, angles, key facts, narrative options; unsafe-claim warnings.
 
 ## Surface
