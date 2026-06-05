@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.services.llm.base import StructuredT
 
 PROVIDER_NAME = "openai-compatible"
@@ -36,7 +37,7 @@ class OpenAICompatError(RuntimeError):
     """Raised on transport failure or output that fails validation after repair."""
 
 
-class OpenAICompatibleProvider:
+class OpenAICompatibleProvider(CloseOwnedClientMixin):
     """A ``ModelProvider`` over the OpenAI chat-completions API."""
 
     name = PROVIDER_NAME
@@ -54,6 +55,7 @@ class OpenAICompatibleProvider:
             raise OpenAICompatError("base_url is required (set REEL_AUTOMATION_BASE_URL)")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._max_repair_retries = max_repair_retries
 
