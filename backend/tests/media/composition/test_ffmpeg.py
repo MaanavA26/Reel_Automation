@@ -1,0 +1,346 @@
+"""Tests for the ffmpeg-backed CompositionService.
+
+The argv-construction and subprocess-failure paths are fully hermetic (no
+ffmpeg binary): `build_ffmpeg_args` is pure, and `render` is exercised with the
+single `_run` subprocess seam mocked. Real rendering is the `@pytest.mark.integration`
+test at the bottom, which skips when ffmpeg is absent.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import shutil
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from app.media.composition.base import CompositionService
+from app.media.composition.ffmpeg import (
+    CompositionError,
+    FfmpegCompositionService,
+    build_ffmpeg_args,
+    resolve_local_path,
+)
+from app.media.schemas import Caption, CaptionTrack, RenderedVideo, SynthesizedSpeech
+
+
+def _audio(uri: str = "file:///tmp/narration.wav", duration_ms: int = 4200) -> SynthesizedSpeech:
+    return SynthesizedSpeech(
+        audio_uri=uri, duration_ms=duration_ms, voice="narrator", produced_via="tts:fake"
+    )
+
+
+def _captions() -> CaptionTrack:
+    return CaptionTrack(
+        cues=[
+            Caption(start_ms=0, end_ms=2000, text="Hello"),
+            Caption(start_ms=2000, end_ms=4200, text="World"),
+        ],
+        produced_via="subtitles:deterministic",
+    )
+
+
+# --- resolve_local_path (pure) ---------------------------------------------
+
+
+def test_resolve_bare_path() -> None:
+    assert resolve_local_path("/tmp/a.wav") == Path("/tmp/a.wav")
+
+
+def test_resolve_relative_bare_path() -> None:
+    assert resolve_local_path("assets/bg.png") == Path("assets/bg.png")
+
+
+def test_resolve_file_uri_unquotes() -> None:
+    assert resolve_local_path("file:///tmp/my%20clip.mp4") == Path("/tmp/my clip.mp4")
+
+
+def test_resolve_rejects_non_file_scheme() -> None:
+    with pytest.raises(CompositionError, match="scheme"):
+        resolve_local_path("fake://composition/bg.png")
+    with pytest.raises(CompositionError, match="scheme"):
+        resolve_local_path("https://example.com/bg.png")
+
+
+# --- build_ffmpeg_args (pure, deterministic) -------------------------------
+
+
+def _build_single() -> list[str]:
+    return build_ffmpeg_args(
+        audio_path=Path("/tmp/a.wav"),
+        visual_paths=[Path("/tmp/bg.png")],
+        subtitles_path=Path("/tmp/out.srt"),
+        output_path=Path("/tmp/out.mp4"),
+        duration_ms=4200,
+        width=1080,
+        height=1920,
+    )
+
+
+def test_build_is_deterministic() -> None:
+    assert _build_single() == _build_single()
+
+
+def test_build_single_visual_argv_tokens() -> None:
+    args = _build_single()
+    assert args[0] == "ffmpeg"
+    assert "-y" in args
+    # Audio is the last input, the still image is looped+bounded.
+    assert args.count("-i") == 2
+    assert "/tmp/a.wav" in args
+    assert "/tmp/bg.png" in args
+    assert ["-loop", "1"] == args[args.index("-loop") : args.index("-loop") + 2]
+    # Duration in seconds appears for -t (4200ms -> 4.200s).
+    assert "4.200" in args
+    # Output path is last.
+    assert args[-1] == "/tmp/out.mp4"
+    # Single visual -> no concat in the filtergraph.
+    fc = args[args.index("-filter_complex") + 1]
+    assert "concat" not in fc
+    assert "scale=1080:1920" in fc
+    assert "pad=1080:1920" in fc
+    assert "subtitles='/tmp/out.srt'" in fc
+    assert "[vout]" in fc
+    # Master-clock plumbing.
+    assert "-shortest" in args
+    assert ["-map", "[vout]"] == args[args.index("[vout]") - 1 : args.index("[vout]") + 1]
+    assert "libx264" in args
+    assert "aac" in args
+    assert "yuv420p" in args
+
+
+def test_build_multi_visual_concats_in_order() -> None:
+    args = build_ffmpeg_args(
+        audio_path=Path("/tmp/a.wav"),
+        visual_paths=[Path("/tmp/1.png"), Path("/tmp/2.png"), Path("/tmp/3.png")],
+        subtitles_path=Path("/tmp/out.srt"),
+        output_path=Path("/tmp/out.mp4"),
+        duration_ms=9000,
+        width=720,
+        height=1280,
+    )
+    assert args.count("-i") == 4  # 3 visuals + 1 audio
+    fc = args[args.index("-filter_complex") + 1]
+    assert "[v0]" in fc and "[v1]" in fc and "[v2]" in fc
+    assert "concat=n=3:v=1:a=0[vcat]" in fc
+    # Concat consumes the labels in input order.
+    assert "[v0][v1][v2]concat" in fc
+    assert "scale=720:1280" in fc
+    # Audio is input index 3 (after the 3 visuals).
+    assert "3:a" in args
+    # Each visual gets an equal slice (9000ms / 3 = 3.000s per input) so the
+    # concatenated stream sums to the narration length; the final -t caps the
+    # whole output at 9.000s. (This distinguishes the correct command from the
+    # bug where every input is bounded to the full duration and concat overruns.)
+    assert args.count("3.000") == 3  # one per-visual -t
+    assert args[args.index("-shortest") - 1] == "9.000"  # final master-clock cap
+
+
+def test_build_subtitles_path_is_escaped() -> None:
+    args = build_ffmpeg_args(
+        audio_path=Path("/tmp/a.wav"),
+        visual_paths=[Path("/tmp/bg.png")],
+        subtitles_path=Path("/tmp/sub:dir/out.srt"),
+        output_path=Path("/tmp/out.mp4"),
+        duration_ms=1000,
+        width=1080,
+        height=1920,
+    )
+    fc = args[args.index("-filter_complex") + 1]
+    # The ':' inside the subtitles filename is escaped for the filtergraph.
+    assert r"subtitles='/tmp/sub\:dir/out.srt'" in fc
+
+
+def test_build_rejects_no_visuals() -> None:
+    with pytest.raises(CompositionError, match="at least one visual"):
+        build_ffmpeg_args(
+            audio_path=Path("/tmp/a.wav"),
+            visual_paths=[],
+            subtitles_path=Path("/tmp/out.srt"),
+            output_path=Path("/tmp/out.mp4"),
+            duration_ms=1000,
+            width=1080,
+            height=1920,
+        )
+
+
+def test_build_rejects_nonpositive_duration() -> None:
+    with pytest.raises(CompositionError, match="duration_ms must be positive"):
+        build_ffmpeg_args(
+            audio_path=Path("/tmp/a.wav"),
+            visual_paths=[Path("/tmp/bg.png")],
+            subtitles_path=Path("/tmp/out.srt"),
+            output_path=Path("/tmp/out.mp4"),
+            duration_ms=0,
+            width=1080,
+            height=1920,
+        )
+
+
+# --- render (subprocess seam mocked) ---------------------------------------
+
+
+def test_satisfies_protocol() -> None:
+    assert isinstance(FfmpegCompositionService(), CompositionService)
+
+
+def test_render_returns_descriptor_and_records_call(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    audio = _audio(uri="/tmp/a.wav")
+    with patch.object(
+        service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")
+    ) as mock_run:
+        video = asyncio.run(
+            service.render(audio=audio, captions=_captions(), visual_uris=["/tmp/bg.png"])
+        )
+    mock_run.assert_called_once()
+    # The argv passed to _run starts with the binary and ends at the output.
+    argv = mock_run.call_args.args[0]
+    assert argv[0] == "ffmpeg"
+    assert argv[-1].endswith(".mp4")
+    assert isinstance(video, RenderedVideo)
+    assert video.duration_ms == audio.duration_ms  # video matches narration
+    assert (video.width, video.height) == (1080, 1920)  # vertical default
+    assert video.produced_via == "composition:ffmpeg"
+    assert video.video_uri.startswith("file://")
+    # Call captured for assertions (mirrors the fake).
+    assert service.calls[0].audio_id == audio.id
+    assert service.calls[0].visual_uris == ["/tmp/bg.png"]
+
+
+def test_render_writes_srt_sidecar(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+        asyncio.run(
+            service.render(
+                audio=_audio(uri="/tmp/a.wav"), captions=_captions(), visual_uris=["/tmp/bg.png"]
+            )
+        )
+    srt_files = list(tmp_path.glob("*.srt"))
+    assert len(srt_files) == 1
+    contents = srt_files[0].read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:02,000" in contents
+    assert "Hello" in contents and "World" in contents
+
+
+def test_render_echoes_requested_dimensions(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+        video = asyncio.run(
+            service.render(
+                audio=_audio(uri="/tmp/a.wav"),
+                captions=_captions(),
+                visual_uris=["/tmp/bg.png"],
+                width=720,
+                height=1280,
+            )
+        )
+    assert (video.width, video.height) == (720, 1280)
+
+
+def test_render_rejects_empty_visuals(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    with pytest.raises(CompositionError, match="at least one visual_uri"):
+        asyncio.run(service.render(audio=_audio(), captions=_captions(), visual_uris=[]))
+
+
+def test_render_rejects_non_file_uri(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    with pytest.raises(CompositionError, match="scheme"):
+        asyncio.run(
+            service.render(
+                audio=_audio(uri="fake://a.wav"),
+                captions=_captions(),
+                visual_uris=["/tmp/bg.png"],
+            )
+        )
+
+
+# --- _run error normalization (the execution seam) -------------------------
+
+
+def test_run_wraps_missing_binary() -> None:
+    service = FfmpegCompositionService()
+    with patch("app.media.composition.ffmpeg.subprocess.run", side_effect=FileNotFoundError()):
+        with pytest.raises(CompositionError, match="ffmpeg binary not found"):
+            service._run(["ffmpeg", "-y"])
+
+
+def test_run_wraps_nonzero_exit_with_stderr_tail() -> None:
+    service = FfmpegCompositionService()
+    failed = subprocess.CompletedProcess(["ffmpeg"], 1, b"", b"Invalid argument boom")
+    with patch("app.media.composition.ffmpeg.subprocess.run", return_value=failed):
+        with pytest.raises(CompositionError, match="exited with code 1") as exc:
+            service._run(["ffmpeg", "-y", "out.mp4"])
+    assert "Invalid argument boom" in str(exc.value)
+
+
+def test_run_wraps_timeout() -> None:
+    service = FfmpegCompositionService()
+    with patch(
+        "app.media.composition.ffmpeg.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("ffmpeg", 600.0),
+    ):
+        with pytest.raises(CompositionError, match="timed out"):
+            service._run(["ffmpeg", "-y"])
+
+
+def test_run_returns_completed_process_on_success() -> None:
+    service = FfmpegCompositionService()
+    ok = subprocess.CompletedProcess(["ffmpeg"], 0, b"", b"")
+    with patch("app.media.composition.ffmpeg.subprocess.run", return_value=ok):
+        assert service._run(["ffmpeg", "-y"]) is ok
+
+
+# --- integration: real ffmpeg render (skips without the binary) ------------
+
+
+@pytest.mark.integration
+def test_real_ffmpeg_render(tmp_path: Path) -> None:
+    """Render a real MP4 with the ffmpeg binary using lavfi-generated inputs.
+
+    Skips when ffmpeg is not on PATH. Inputs are synthesized by ffmpeg itself
+    (a color source + silent audio), so no binary fixtures live in the repo.
+    """
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg binary not on PATH")
+
+    # Generate a 2s 1080x1920 solid-color still and 2s of silence.
+    image = tmp_path / "bg.png"
+    audio = tmp_path / "a.wav"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=teal:s=1080x1920:d=1",
+            "-frames:v",
+            "1",
+            str(image),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "2", str(audio)],
+        check=True,
+        capture_output=True,
+    )
+
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    video = asyncio.run(
+        service.render(
+            audio=_audio(uri=audio.as_uri(), duration_ms=2000),
+            captions=_captions(),
+            visual_uris=[image.as_uri()],
+        )
+    )
+
+    out = Path(resolve_local_path(video.video_uri))
+    assert out.exists() and out.stat().st_size > 0
+    assert video.duration_ms == 2000
+    assert (video.width, video.height) == (1080, 1920)
