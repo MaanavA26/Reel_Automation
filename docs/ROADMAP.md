@@ -229,6 +229,17 @@
   builds the track (`DeterministicSubtitleService`) → composes (`CompositionService`). DI + skip/raise mirror
   `IngestionService`; the single, deliberate ADR 0019 §4 coupling exception (only this file imports the Deep
   Research schema). `visual_uris` pass through (sourcing still deferred). [ADR 0025](adrs/0025-media-pipeline.md).
+- ✅ **Short-form script + shot-list builder.** `ScriptBuilder` (`backend/app/scripting/`) — a deterministic
+  tool (no LLM; CLAUDE.md §4's named borderline — the creative wording already happened in M12, this only
+  *structures*) that turns a `CreatorPacket` into a typed `ShortScript`: an ordered hook → body → CTA
+  `ScriptBeat` list, each with VO text (one clean line, 1:1 with a `MediaPipeline` segment/cue), an advisory
+  WPM `estimated_duration_ms`, and a deterministic `visual_keyword` seed for the `VisualProvider` seam. §11
+  honesty made structural: per-beat `finding_ids` + `disputed` are code-derived from the packet's `KeyFact`
+  map and the relevant `CreatorWarning`s are carried forward verbatim (flag + keep, never smooth); the CTA is
+  claim-free scaffolding. Timing flags overflow (`exceeds_shorts_ceiling`, `target = min(sum, 60s)`) rather
+  than scaling or raising — the real timing is `MediaPipeline`'s post-TTS allocation. Selection/error contract
+  mirrors `MediaPipeline`. Pure + fully hermetic-tested; new package only, no existing-file changes. LLM
+  creative rewriting is a documented future enhancement. [ADR 0038](adrs/0038-script-shotlist.md).
   - ✅ **Composition (ffmpeg).** `FfmpegCompositionService` (`backend/app/media/composition/ffmpeg.py`) —
     first concrete `CompositionService`: assembles audio + `CaptionTrack` + visuals into a vertical MP4.
     Pure `build_ffmpeg_args` (argv construction, fully unit-testable with no binary) split from a single
