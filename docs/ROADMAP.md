@@ -114,6 +114,11 @@
   - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
+  - 🔨 **M-LP.4 (YouTube ingestion):** `TranscriptProvider` seam + `FakeTranscriptProvider`
+    + real `YouTubeTranscriptProvider` (`youtube-transcript-api`, optional `[youtube]` extra,
+    lazy-imported) wired into `IngestionService` for `SourceType.YOUTUBE`. Opens the YouTube
+    path ADR 0008 deferred; pure `extract_video_id`/`normalize_transcript` helpers, timestamps
+    discarded in v1. Hermetic + `@pytest.mark.integration` live. [ADR 0015](adrs/0015-youtube-ingestion.md).
 
 ---
 *Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
