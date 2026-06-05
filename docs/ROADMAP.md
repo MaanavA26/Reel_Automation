@@ -167,6 +167,13 @@
     `ResearchState` (job id = `state.id`); held as a process-singleton on `app.state`. The sync `POST
     /research` endpoint is kept. **Single-process, non-durable by design** — durable/cross-worker store,
     streaming progress, and `CANCELLED` deferred. [ADR 0031](adrs/0031-async-job-store.md).
+  - 🔨 **M13 (client SDK):** typed Python client (`backend/app/client/`) + runnable `examples/`. A
+    synchronous `httpx`-based `ReelAutomationClient` wrapping the four real endpoints
+    (`health`/`submit_research`/`enqueue_job`/`get_job`), importing the server's `ResearchJobRequest` /
+    `ResearchState` / `HealthResponse` so it stays in lockstep with the contract; `base_url` at
+    construction, bounded generous timeout, typed `ReelAutomationAPIError` (status + parsed `detail`),
+    injectable transport. Fully offline-tested via `httpx.MockTransport`; `examples/` are illustrative
+    (not in CI). No `config.py`/`main.py`/`pyproject.toml`/`app/api/` change (client + examples only).
     - 🔨 **M13 (durable job store):** `SqliteJobStore` (`backend/app/services/jobs/sqlite_store.py`) — the
       durable backend ADR 0031 deferred. Same `enqueue`/`get`/`run` lifecycle, but persists the canonical
       `ResearchState` JSON (`model_dump_json`/`model_validate_json`) to a stdlib-`sqlite3` file keyed by job
