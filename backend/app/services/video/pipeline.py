@@ -44,6 +44,7 @@ from app.schemas.research_state import (
     CreatorPacket,
     JobStatus,
     NarrativeOption,
+    Report,
     ResearchState,
 )
 from app.services.composition import (
@@ -111,6 +112,32 @@ class VideoArtifact(BaseModel):
     produced_via: str
 
 
+@dataclass(frozen=True)
+class ProducedVideo:
+    """The flattened `VideoArtifact` plus the rich upstream objects behind it.
+
+    The end-to-end path produces a `VideoArtifact` (ids + uri, the public,
+    serializable contract the API returns), but the **downstream** publish path —
+    the closed-loop runner (ADR 0054) — needs the full objects the artifact only
+    *references by id*: the `PrePublishGate` evaluates the `Report` + `CreatorPacket`
+    + a candidate, and the publishing fabric uploads the `RenderedVideo` carried on
+    the `MediaPlan`. Re-deriving those from ids would mean re-running research, so
+    `create_bundle` returns them alongside the artifact in one immutable bundle.
+
+    This is a *bundle of already-produced objects*, not a new DTO surface — a
+    `dataclass` (like `VideoPipelineBundle`), not a Pydantic model, since every
+    member is itself a validated, frozen artifact. ``report`` is resolved by
+    ``packet.report_id`` (not blindly the last report) so the gate evaluates the
+    exact report the packet was built from.
+    """
+
+    artifact: VideoArtifact
+    research_state: ResearchState
+    report: Report
+    packet: CreatorPacket
+    media_plan: MediaPlan
+
+
 class VideoPipeline:
     """Turns a topic into a `VideoArtifact` via the research + media subsystems.
 
@@ -146,12 +173,32 @@ class VideoPipeline:
     ) -> VideoArtifact:
         """Run the full topic → finished video path and return the artifact.
 
+        The public, API-facing surface: a thin projection of `create_bundle` down
+        to the serializable `VideoArtifact`. The rich upstream objects (report,
+        packet, rendered video) are dropped here — the API returns ids + uri — and
+        retained only for the downstream publish path via `create_bundle`. Raises
+        `VideoPipelineError` if research failed or produced no packet; media-side
+        failures propagate as `MediaPipelineError`/`CompositionError`.
+        """
+        bundle = await self.create_bundle(topic, narrative_index=narrative_index)
+        return bundle.artifact
+
+    async def create_bundle(
+        self,
+        topic: str,
+        *,
+        narrative_index: int = 0,
+    ) -> ProducedVideo:
+        """Run the full path and return the artifact **plus** its upstream objects.
+
         Steps: (1) run Deep Research to a terminal `ResearchState`; (2) guard that
         it completed with a narratable creator packet; (3) optionally retrieve
         B-roll for the chosen narrative; (4) build the `MediaPlan` via the media
-        pipeline; (5) project it into a `VideoArtifact`. Raises
-        `VideoPipelineError` if research failed or produced no packet; media-side
-        failures propagate as `MediaPipelineError`/`CompositionError`.
+        pipeline; (5) project it into a `VideoArtifact` and bundle it with the
+        `Report` (resolved by ``packet.report_id``) + `CreatorPacket` + `MediaPlan`
+        the downstream `PrePublishGate`/publisher need. `create` wraps this and
+        returns only the artifact; the closed-loop runner (ADR 0054) consumes the
+        full bundle. Same error contract as `create`.
         """
         logger.info("video pipeline: starting research for topic %r", topic)
         final = await run_research(
@@ -160,6 +207,7 @@ class VideoPipeline:
             max_syntheses=self._max_syntheses,
         )
         packet = self._narratable_packet(final)
+        report = self._resolve_report(final, packet)
 
         narrative = self._select_narrative(packet, narrative_index)
         visual_uris = await self._retrieve_visuals(narrative.title)
@@ -170,7 +218,33 @@ class VideoPipeline:
             narrative_index=narrative_index,
             visual_uris=visual_uris,
         )
-        return self._to_artifact(topic, final, packet_id=packet.id, plan=plan)
+        artifact = self._to_artifact(topic, final, packet_id=packet.id, plan=plan)
+        return ProducedVideo(
+            artifact=artifact,
+            research_state=final,
+            report=report,
+            packet=packet,
+            media_plan=plan,
+        )
+
+    @staticmethod
+    def _resolve_report(final: ResearchState, packet: CreatorPacket) -> Report:
+        """Return the `Report` the packet was built from (by ``packet.report_id``).
+
+        The packet carries a ``report_id`` re-join key; the safety gate must
+        evaluate the *exact* report behind this packet (its caveats/citations),
+        not the last report the run happened to publish. Falls back to raising a
+        clear `VideoPipelineError` if the id does not resolve — a structural
+        invariant violation worth failing loud rather than gating on the wrong
+        report.
+        """
+        for report in final.publishing.reports:
+            if report.id == packet.report_id:
+                return report
+        raise VideoPipelineError(
+            f"creator packet {packet.id} references report {packet.report_id}, "
+            f"which is absent from research run {final.id}'s published reports"
+        )
 
     def _narratable_packet(self, final: ResearchState) -> CreatorPacket:
         """Return the packet to render, or raise if the run is not narratable.

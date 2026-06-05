@@ -38,7 +38,7 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import httpx
 
@@ -65,6 +65,11 @@ from app.media.visuals.base import VisualProvider
 from app.media.visuals.generative import GenerativeVisualProvider
 from app.media.visuals.generative_router import build_generative_visual_provider
 from app.media.visuals.stock import StockVisualProvider
+from app.publishing.base import PublishingProvider
+from app.publishing.youtube import YouTubeShortsPublisher
+from app.review.service import ReviewService
+from app.safety.gate import PrePublishGate
+from app.services.budget.tracker import BudgetLimits, BudgetTracker
 from app.services.ingestion.httpx_fetch import HttpxFetchProvider
 from app.services.ingestion.service import IngestionService
 from app.services.llm.base import ModelProvider
@@ -81,7 +86,18 @@ from app.services.llm.router import ModelRouter
 from app.services.search.base import SearchProvider
 from app.services.search.brave_search import BraveSearchProvider
 from app.services.search.live import TavilySearchProvider
+from app.topics.base import TopicIdea, TrendProvider
+from app.topics.live import HttpTrendProvider
+from app.topics.selection import select_topics
 from app.workflows.deep_research import ResearchDeps
+
+if TYPE_CHECKING:
+    # Imported lazily inside `build_closed_loop` to break the import cycle
+    # `composition -> scheduler.closed_loop -> services.video.pipeline ->
+    # composition` (the pipeline reads `MediaDeps`/`build_*_deps` from here at
+    # module load). The composition root assembling the loop is the correct
+    # layering direction; only the module-load order forces the local import.
+    from app.scheduler.closed_loop import ClosedLoopRunner, TopicSource
 
 
 class CompositionError(RuntimeError):
@@ -500,3 +516,188 @@ def _make_filesystem_visual_sink(output_dir: Path) -> VisualSink:
         return path.resolve().as_uri()
 
     return _sink
+
+
+# --- Closed-loop automation runner (ADR 0054) -------------------------------
+
+
+@dataclass(frozen=True)
+class ClosedLoopBundle:
+    """A built `ClosedLoopRunner` plus the httpx-owning seams to close on shutdown.
+
+    The automation-band analogue of `VideoPipelineBundle`: the loop aggregates the
+    video pipeline (research + media clients), the live trend provider, and the
+    live publisher — each owning an httpx client the long-lived process must close
+    on shutdown (ADR 0044). ``closables`` is their union; the CLI / a future
+    lifespan drains them when the loop exits.
+    """
+
+    runner: ClosedLoopRunner
+    closables: tuple[AsyncClosable, ...]
+
+
+def _build_trend_provider(settings: Settings) -> TrendProvider:
+    """Build the live `HttpTrendProvider`, or fail loud if its key is unset.
+
+    The closed loop's topic source mines `loop_niches` via this provider; an
+    unconfigured key surfaces as a `CompositionError` (never a silent fake), the
+    same fail-loud posture as the search/model builders.
+    """
+    key = settings.trends_api_key.get_secret_value()
+    if not key:
+        raise CompositionError(
+            "closed loop requires a trends provider — set REEL_AUTOMATION_TRENDS_API_KEY"
+        )
+    return HttpTrendProvider(api_key=key)
+
+
+def _make_topic_source(
+    provider: TrendProvider, *, niches: list[str], per_niche_limit: int
+) -> TopicSource:
+    """Build the loop's `TopicSource`: discover across niches, de-dupe, rank.
+
+    Composes the deterministic topic tools (CLAUDE.md §4): fan out `discover`
+    across the configured niches, flatten, then `select_topics` to de-dupe + rank
+    into the prioritized topic strings the loop enqueues. The *judgment* of which
+    niches to mine is the operator's config; the *ranking* is the deterministic
+    selection tool — no agent here.
+    """
+
+    async def _source() -> list[str]:
+        candidates: list[TopicIdea] = []
+        for niche in niches:
+            candidates.extend(await provider.discover(niche=niche, limit=per_niche_limit))
+        return [idea.title for idea in select_topics(candidates)]
+
+    return _source
+
+
+def _build_publisher(settings: Settings) -> PublishingProvider:
+    """Build the configured live `PublishingProvider`, or fail loud.
+
+    ``publish_platform`` selects the adapter. ``youtube`` wires
+    `YouTubeShortsPublisher` over the operator-minted OAuth token + a filesystem
+    `VideoSource` that reads the rendered ``file://`` video bytes the live media
+    path wrote (the local-storage choice this root owns; the adapter is
+    storage-neutral). A missing token / unknown platform raises `CompositionError`.
+    """
+    platform = settings.publish_platform
+    if platform == YouTubeShortsPublisher.name:
+        token = settings.youtube_access_token.get_secret_value()
+        if not token:
+            raise CompositionError(
+                "publish_platform='youtube' requires REEL_AUTOMATION_YOUTUBE_ACCESS_TOKEN"
+            )
+        return YouTubeShortsPublisher(
+            access_token=token,
+            video_source=_make_filesystem_video_source(),
+        )
+    raise CompositionError(
+        f"no publisher adapter for publish_platform={platform!r}; "
+        f"set REEL_AUTOMATION_PUBLISH_PLATFORM to: {YouTubeShortsPublisher.name}"
+    )
+
+
+def _make_filesystem_video_source() -> Callable[[str], bytes]:
+    """A `VideoSource` reading rendered video bytes from a local ``file://`` uri.
+
+    The live media path writes rendered videos to the filesystem and the pipeline
+    carries a ``file://`` uri; this reads those bytes for upload. A non-file uri
+    is a configuration error (the loop publishes what the local renderer produced).
+    """
+
+    def _source(uri: str) -> bytes:
+        if uri.startswith("file://"):
+            return Path(uri[len("file://") :]).read_bytes()
+        if "://" not in uri:
+            return Path(uri).read_bytes()
+        raise CompositionError(
+            f"closed-loop publisher can only read local rendered videos, got remote uri {uri!r}"
+        )
+
+    return _source
+
+
+def build_closed_loop(
+    settings: Settings | None = None,
+    *,
+    review_service: ReviewService | None = None,
+) -> ClosedLoopBundle:
+    """Assemble a live `ClosedLoopRunner` (+ its closables) from settings (ADR 0054).
+
+    Wires the unattended driver loop from the existing seams:
+
+    * the live `VideoPipeline` (`build_video_pipeline`) as the produce target;
+    * a default `PrePublishGate` (the automated ALLOW/REVIEW/BLOCK policy);
+    * the `ReviewService` human-review gate (a fresh one unless injected, so a CLI
+      and the API can share one instance);
+    * a `PendingPublicationStore` for approved→publish holds;
+    * the live `HttpTrendProvider` + `select_topics` as the topic source;
+    * the live `PublishingProvider` selected by ``publish_platform``;
+    * the loop's own `BudgetTracker` (a coarse per-video count/cost ceiling).
+
+    Every live seam fails loud (`CompositionError`) when unconfigured — never a
+    silent fake. The default mode is **supervised** (nothing auto-posts);
+    ``loop_mode='autonomous'`` opts into auto-posting and is the last-mile,
+    live-key-gated income loop. Tests bypass this entirely by constructing a
+    `ClosedLoopRunner` with fake-backed collaborators.
+    """
+    # Local imports break the module-load cycle (see the TYPE_CHECKING note up
+    # top): `services.video.pipeline` reads `MediaDeps`/`build_*_deps` from this
+    # module at import time, so importing it (and the loop that imports it) at
+    # module level here would deadlock the import graph.
+    from app.scheduler.closed_loop import (
+        ClosedLoopRunner,
+        LoopMode,
+        PendingPublicationStore,
+    )
+    from app.services.video.pipeline import build_video_pipeline
+
+    resolved = settings or get_settings()
+
+    niches = [n.strip() for n in resolved.loop_niches.split(",") if n.strip()]
+    if not niches:
+        raise CompositionError(
+            "closed loop requires at least one niche — set REEL_AUTOMATION_LOOP_NICHES "
+            "(comma-separated)"
+        )
+    try:
+        mode = LoopMode(resolved.loop_mode)
+    except ValueError as exc:
+        raise CompositionError(
+            f"invalid loop_mode={resolved.loop_mode!r}; expected one of: "
+            f"{', '.join(m.value for m in LoopMode)}"
+        ) from exc
+
+    video = build_video_pipeline(resolved)
+    trend_provider = _build_trend_provider(resolved)
+    publisher = _build_publisher(resolved)
+
+    runner = ClosedLoopRunner(
+        pipeline=video.pipeline,
+        gate=PrePublishGate(),
+        reviews=review_service if review_service is not None else ReviewService(),
+        pending=PendingPublicationStore(),
+        publisher=publisher,
+        topic_source=_make_topic_source(
+            trend_provider, niches=niches, per_niche_limit=resolved.loop_batch_size
+        ),
+        budget=BudgetTracker(
+            limits=BudgetLimits(
+                per_run=resolved.loop_budget_per_run,
+                per_day=resolved.loop_budget_per_day,
+            )
+        ),
+        mode=mode,
+        queue=None,
+        batch_size=resolved.loop_batch_size,
+        max_concurrency=resolved.loop_max_concurrency,
+        video_cost_estimate=resolved.loop_video_cost_estimate,
+        privacy_status=resolved.loop_privacy_status,
+    )
+    closables: tuple[AsyncClosable, ...] = (
+        *video.closables,
+        cast(AsyncClosable, trend_provider),
+        cast(AsyncClosable, publisher),
+    )
+    return ClosedLoopBundle(runner=runner, closables=closables)
