@@ -54,6 +54,17 @@
   providers), progress → M13 (streaming API), `CANCELLED` → checkpointer milestone, quality
   gates/revision loops → M10 (Editorial Critic agent). The §5.6 "Orchestrator Agent" is aspirational
   until M10 gives it something to judge.
+- ✅ **Budget guardrails (`services/budget/`).** Estimated-spend metering + **enforcement** so
+  unattended runs can't overspend — the budgets half ADR 0005 deferred. A `BudgetTracker` accrues
+  call counts + estimated cost per-run / per-calendar-day (injected `Clock`) and raises
+  `BudgetExceededError` *before* a call breaches a ceiling (pre-call reservation; strict `>` boundary;
+  both ceilings optional + independent; unmodeled model fails loud, never silent $0). Cost via a
+  pluggable `CostEstimator` (`PerCallEstimator` / `TokenCostEstimator`) over a configurable
+  `PriceTable`. A `BudgetedModelProvider` decorator estimates → reserves → blocks before the wrapped
+  call, so a blocked call incurs no real spend. Estimate-vs-actual caveat documented (no token-usage
+  in the provider contract → a conservative ceiling, not an invoice). Hermetic (`FakeProvider` + stub
+  clock). **Capability only, no wiring** (M-LP pattern); the Orchestrator owns how to react to a block.
+  [ADR 0035](adrs/0035-budget-guardrails.md).
 
 ## Knowledge Acquisition band
 - ✅ **M5 — Source Discovery agent.** `SourceDiscoveryAgent` plans search queries via the
