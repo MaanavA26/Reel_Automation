@@ -106,8 +106,11 @@
   the **full** findings set (so an uncited disputed finding still surfaces) and the
   `UNRESOLVED_CRITIQUE` banner fires when the revision loop exhausted unsatisfied (fulfilling
   ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
-  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
-  creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
+  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Creator-packet fields
+  deferred to M12. Deterministic `render_markdown` / `render_html` renderers
+  (`services/publishing/markdown.py`, `html.py`) now fulfil ADR 0017's deferred renderer — citations
+  and caveats always render (the §11 non-omittability carried to the output surface), HTML escapes
+  all text. [ADR 0017](adrs/0017-report-generation.md).
 - ✅ **M12 — Creator packet + downstream handoff artifacts.** Report + findings → a short-form
   `CreatorPacket` (`CreatorPacketAgent`, the Short-Form Content Strategist, `LONG_CONTEXT` role) —
   hook ideas, content angles, short narrative options (model creative prose) + **code-derived key
@@ -211,6 +214,12 @@
   to a Docker-enabled run / the `docker-build.yml` CI job.
 - ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
   target is chosen; current workflow is build-only to keep zero auth/secret surface.
+- ✅ **Structured logging + run-tracing scaffold.** Stdlib-only `JsonFormatter` (one JSON
+  object per log line: `ts`/`level`/`logger`/`message`/`run_id`) + a `contextvars`-based
+  `run_context(run_id)` so a Deep Research job's logs are correlatable across all nodes/agents
+  without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
+  configures the root logger idempotently; entrypoint wiring left as a one-line call.
+  [ADR 0030](adrs/0030-structured-logging.md).
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
