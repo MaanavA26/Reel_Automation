@@ -113,6 +113,22 @@
 ## Surface
 - ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
 
+## Media Production Layer (CLAUDE.md §3.3 — second major component)
+> Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Introduced
+> via [ADR 0019](adrs/0019-media-production-layer.md) per §3.4/§16.
+- ✅ **Layer scaffold.** `backend/app/media/` seams mirroring the LLM/search fabric:
+  `TTSProvider` protocol + hermetic `FakeTTSProvider` (text → `SynthesizedSpeech`);
+  `CompositionService` protocol + hermetic `FakeCompositionService` wrapping the future
+  FFmpeg step (assets → `RenderedVideo`, **no real ffmpeg**); and — asymmetric — a subtitle
+  band shipping **real** code (sync `SubtitleService` protocol + `DeterministicSubtitleService`
+  + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
+  carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
+  Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
+- ⬜ **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
+  image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+- ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
+  inputs; earns its own ADR once M12's packet shape is fixed.
+
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
   - ✅ **M-LP.1 (LLM):** `OpenAICompatibleProvider` (httpx, OpenAI `/chat/completions`) —
@@ -124,8 +140,18 @@
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
 
+## Showcase
+- 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
+  the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
+  failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
+  (CLAUDE.md §12). Tracks the engine through M10b.
+
 ---
-*Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
+*Updated 2026-06-05. Deep Research milestone: **M12** (Creator packet) next; M1–M11 built. Separately, the **Media Production Layer** (CLAUDE.md §3.3, second major component) is seam-scaffolded — see its section above and [ADR 0019](adrs/0019-media-production-layer.md).*
+*Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
++ M-LP.1 (LLM adapter) implemented; the Planner runs live (Gemini/Groq), the pipeline
+fetches+chunks real web sources, and synthesize→critique→(revise) runs end-to-end. Next:
+M11 (report/export).*
 
 > **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
 > and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are
