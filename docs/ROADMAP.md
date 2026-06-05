@@ -300,6 +300,23 @@
   failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
   (CLAUDE.md §12). Tracks the engine through M10b.
 
+## Analytics / feedback loop (CLAUDE.md §3.4 — fourth layer)
+> Provider-neutral, deterministic **tools** (CLAUDE.md §4 — the *judgment* of which ranked
+> topics to pursue stays with an upstream agent). Introduced via [ADR 0036](adrs/0036-analytics-feedback.md).
+- ✅ **Stats seam + topic scorer.** `backend/app/analytics/` — pull published-video performance
+  back in to steer what gets made next. (1) A seam mirroring the search fabric: an
+  `AnalyticsProvider` protocol (`fetch_stats(*, post_id) -> VideoStats`) + a platform-pure
+  `VideoStats` DTO (platform `post_id` as the natural key — no synthetic id; `fetched_via`/`fetched_at`
+  provenance; watch-time absolute vs retention ratio kept distinct, both optional `| None`) + a
+  hermetic `FakeAnalyticsProvider` + a real httpx `YouTubeAnalyticsProvider` (single verified
+  `GET /v2/reports`, mapped by column name; Brave-style hardening — OAuth token at construction,
+  never leaked, `AnalyticsError` only on bad shape/not-found). (2) `feedback.score_topics` — an
+  explainable, **batch-independent** topic scorer (scale-free engagement/retention/views-saturation
+  components blended with named weights; `TopicScore` carries the breakdown — §11; score-desc with a
+  deterministic topic tie-break). Fully hermetic (`MockTransport` + pure scorer; live YouTube path is a
+  `@pytest.mark.integration` smoke). Capability only — no wiring (no `config.py`/`api/` change); adoption
+  is a later orchestrator/topic-queue change. [ADR 0036](adrs/0036-analytics-feedback.md).
+
 ---
 *Updated 2026-06-05. Deep Research milestone: **M12** (Creator packet) next; M1–M11 built. Separately, the **Media Production Layer** (CLAUDE.md §3.3, second major component) is seam-scaffolded — see its section above and [ADR 0019](adrs/0019-media-production-layer.md).*
 *Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
