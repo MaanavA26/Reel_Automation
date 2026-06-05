@@ -127,6 +127,14 @@
     composition root + `python -m app.cli.plan` harness + `@pytest.mark.integration` live test.
     **The Planner is now runnable against a real free LLM.** [ADR 0007](adrs/0007-openai-compatible-llm-adapter.md).
   - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
+  - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
+    free-model JSON reliability proves insufficient.
+  - ✅ **M-LP.4 (PDF ingestion):** second parser behind the ingestion seam — a `PdfParser`
+    protocol + `pypdf`-backed `PypdfParser` (lazy import, offline-safe to construct) +
+    `FakePdfParser`, routed for `SourceType.PDF` in `IngestionService`; content-type allowlist
+    widened to `application/pdf`. Text-layer only; scanned/image-only PDFs (OCR) stay deferred.
+    `Chunk.parsed_via` reconsidered and re-deferred to a dedicated schema PR (ADR 0008's gate).
+    `pypdf` added to deps. [ADR 0014](adrs/0014-pdf-ingestion.md).
   - ✅ **M-LP.3 (LLM, Gemini-native):** `GeminiProvider` (httpx, `generateContent` REST) — the
     second concrete `ModelProvider`, whose value over M-LP.1 is **native structured output**:
     `responseSchema` + `responseMimeType: application/json` constrain decoding server-side
