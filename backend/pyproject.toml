@@ -10,16 +10,16 @@ dependencies = [
     "langgraph>=1.0,<2.0",
     "pydantic>=2.0,<3.0",
     "pydantic-settings>=2.0,<3.0",
-    "pypdf>=5.0,<6.0",  # pure-Python PDF text extraction (ADR 0014)
+    "pypdf>=5.0,<7.0",  # pure-Python PDF text extraction (ADR 0014)
     "python-dotenv>=1.0,<2.0",
     "uvicorn[standard]>=0.30,<1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0,<9.0",
+    "pytest>=8.0,<10.0",
     "ruff>=0.8,<1.0",
-    "mypy>=1.13,<2.0",
+    "mypy>=1.13,<3.0",
 ]
 # YouTube transcript ingestion (network-gated; PyPI unreachable in the sandbox).
 # Lazy-imported in `youtube_transcript_provider.py` so the package imports clean
