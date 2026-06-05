@@ -170,6 +170,19 @@
       unsafe-claim **warnings** flagged prominently and cross-linked to creative elements by shared
       `finding_ids`. Adds `Report`/`Citation`/`Caveat`/`CreatorPacket` (+ siblings) TS types and the
       `publishing` substate; fixture extended. `npm run build` not runnable in the offline sandbox.
+    - 🔨 **M13 (frontend) — Studio view.** Operator control panel for producing + publishing videos
+      (`frontend/src/pages/StudioPage.tsx`, `components/studio/`, `types/video.ts`, `services/video.ts`).
+      Topic → kick off a video job → a `PipelineStages` strip (research → packet → script → render, each
+      with its own `JobStatus`) → preview the report/packet (reusing the existing `ReportView`/
+      `CreatorPacketView`) + a new `ScriptView` (narrative beats + `RenderedVideo` descriptor) → a
+      `PublishPanel` and `SchedulePanel` calling typed, **mockable** service methods (`submitVideoJob`/
+      `getVideoJob`/`publishVideo`/`scheduleVideo`, injectable transport, snake-case wire mirroring the
+      planned `POST /api/v1/videos` + `MediaPlan`/`RenderedVideo`). The §11 publish gate is load-bearing:
+      the packet's unsafe-claim warnings + the report's caveats render **inside** both the publish and
+      schedule panels (a scheduled publish is a publish action), adjacent to the button, gating the
+      action behind an explicit acknowledgment. Ships a `sampleVideo`
+      fixture (reusing `sampleResearch`) so the surface renders offline; backend routes deferred to a
+      sibling PR. `npm run build` passes (tsc + vite).
 
 ## Media Production Layer (CLAUDE.md §3.3 — second major component)
 > Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Introduced
