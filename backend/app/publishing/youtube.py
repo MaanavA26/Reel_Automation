@@ -46,11 +46,16 @@ from typing import Any
 
 import httpx
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.media.schemas import RenderedVideo
 from app.publishing.base import PublishResult, PublishTarget
 
 PLATFORM = "youtube"
 PROVIDER_NAME = "youtube"
+
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never lands in logs / surfaced errors (info-leak guard, ADR 0043/0044).
+_ERR_BODY_MAX = 500
 
 _DEFAULT_UPLOAD_BASE = "https://www.googleapis.com/upload"
 # part values to set + echo back; snippet carries title/description/tags,
@@ -78,7 +83,7 @@ class PublishError(RuntimeError):
     """
 
 
-class YouTubeShortsPublisher:
+class YouTubeShortsPublisher(CloseOwnedClientMixin):
     """A `PublishingProvider` that uploads a `RenderedVideo` as a YouTube Short.
 
     The OAuth access token is supplied at construction (never from ``Settings``);
@@ -105,6 +110,7 @@ class YouTubeShortsPublisher:
         self._video_source = video_source
         self._upload_base = upload_base.rstrip("/")
         self._category_id = category_id
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def publish(self, *, video: RenderedVideo, target: PublishTarget) -> PublishResult:
@@ -188,10 +194,10 @@ def _map_result(data: Any) -> PublishResult:
     or mistyped ``id`` is a contract violation wrapped in `PublishError`.
     """
     if not isinstance(data, dict):
-        raise PublishError(f"unexpected YouTube response shape: {data!r}")
+        raise PublishError(f"unexpected YouTube response shape: {repr(data)[:_ERR_BODY_MAX]}")
     video_id = data.get("id")
     if not video_id or not isinstance(video_id, str):
-        raise PublishError(f"YouTube response missing video 'id': {data!r}")
+        raise PublishError(f"YouTube response missing video 'id': {repr(data)[:_ERR_BODY_MAX]}")
     return PublishResult(
         platform=PLATFORM,
         post_id=video_id,

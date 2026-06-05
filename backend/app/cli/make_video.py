@@ -32,9 +32,14 @@ async def _run(topic: str) -> None:
     # Construct Settings explicitly (not the cached module-level instance) so the
     # CLI reads the current environment / .env at invocation time, mirroring
     # app.cli.plan.
-    pipeline = build_video_pipeline(Settings())
-    artifact = await pipeline.create(topic)
-    print(artifact.model_dump_json(indent=2))
+    bundle = build_video_pipeline(Settings())
+    try:
+        artifact = await bundle.pipeline.create(topic)
+        print(artifact.model_dump_json(indent=2))
+    finally:
+        # Close the providers' httpx clients before the loop exits (ADR 0044).
+        for closable in bundle.closables:
+            await closable.aclose()
 
 
 def main() -> None:

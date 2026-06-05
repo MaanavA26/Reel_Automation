@@ -32,10 +32,14 @@ from typing import Any
 
 import httpx
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.topics.base import TopicIdea
 
 PROVIDER_NAME = "trends"
 _DEFAULT_BASE_URL = "https://api.example-trends.com"
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never lands in logs / surfaced errors (info-leak guard, ADR 0043/0044).
+_ERR_BODY_MAX = 500
 
 
 class TrendError(RuntimeError):
@@ -48,7 +52,7 @@ class TrendError(RuntimeError):
     """
 
 
-class HttpTrendProvider:
+class HttpTrendProvider(CloseOwnedClientMixin):
     """A `TrendProvider` over a generic trends/keyword REST API.
 
     Hardened like the search/LLM adapters: a bounded timeout and a key that never
@@ -70,6 +74,7 @@ class HttpTrendProvider:
             raise TrendError("api_key is required (set REEL_AUTOMATION_TRENDS_API_KEY)")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def discover(self, *, niche: str, limit: int = 10) -> list[TopicIdea]:
@@ -109,7 +114,7 @@ def _map_trends(data: Any, *, niche: str, limit: int) -> list[TopicIdea]:
     Only a *present but mistyped* payload is wrapped in `TrendError`.
     """
     if not isinstance(data, dict):
-        raise TrendError(f"unexpected trends response shape: {data!r}")
+        raise TrendError(f"unexpected trends response shape: {repr(data)[:_ERR_BODY_MAX]}")
 
     raw = data.get("trends")
     if raw is None:
