@@ -294,6 +294,22 @@
   without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
   configures the root logger idempotently; entrypoint wiring left as a one-line call.
   [ADR 0030](adrs/0030-structured-logging.md).
+
+## Topic / Trend Sourcing (CLAUDE.md §3.4 — pipeline front door)
+- ✅ **Topic / trend sourcing layer** (`backend/app/topics/`). The pipeline's front
+  door: niche/seed → ranked candidate video topics (the backlog's trend-awareness ask).
+  Both halves are *tools*, not agents (CLAUDE.md §4): a `TrendProvider` async protocol +
+  `Source`-shaped `TopicIdea` DTO (auto-minted `topic_…` id + required `sourced_via` — the
+  §11 anchor: tool-discovered, never LLM-invented), a hermetic `FakeTrendProvider`, an
+  `httpx` `HttpTrendProvider` over a generic trends/keyword REST shape (mirrors the search
+  adapters; MockTransport-hermetic + an integration smoke reading the key from the env, no
+  `config.py` change), and a pure deterministic `select_topics` (rank by provider `signal`
+  desc, explicit title/id tie-break, `None` lowest; de-dupe keeps the highest-signal idea
+  wholesale). The green-light *judgment* is a future content-strategy agent (§5.6) that
+  consumes this ordered output; the scheduler queue, a `Settings` field, and a provider
+  router are deferred follow-ups. Local `_gen_id` copy (ADR 0019 precedent) keeps the layer
+  standalone. [ADR 0037](adrs/0037-topic-trend-sourcing.md).
+
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
