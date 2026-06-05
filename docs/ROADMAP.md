@@ -206,6 +206,12 @@
   to a Docker-enabled run / the `docker-build.yml` CI job.
 - ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
   target is chosen; current workflow is build-only to keep zero auth/secret surface.
+- ✅ **Structured logging + run-tracing scaffold.** Stdlib-only `JsonFormatter` (one JSON
+  object per log line: `ts`/`level`/`logger`/`message`/`run_id`) + a `contextvars`-based
+  `run_context(run_id)` so a Deep Research job's logs are correlatable across all nodes/agents
+  without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
+  configures the root logger idempotently; entrypoint wiring left as a one-line call.
+  [ADR 0030](adrs/0030-structured-logging.md).
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +

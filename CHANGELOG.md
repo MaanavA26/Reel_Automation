@@ -13,6 +13,7 @@ are not yet part of a tagged release. When cutting a release, move the
 
 ### Added
 
+- Structured logging + run-tracing scaffold (`backend/app/core/logging.py`, `backend/app/core/run_context.py`) — a stdlib-only `JsonFormatter` (one log line = one JSON object: `ts`, `level`, `logger`, `message`, `run_id`) and a `contextvars`-based `run_context(run_id)` / `bind_run_id()` so every line a Deep Research job emits is correlatable without touching existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)` configures the root logger idempotently; the app entrypoint wires it (one-line call, not added here). Decisions in [ADR 0030](docs/adrs/0030-structured-logging.md). Observability scaffold (CLAUDE.md §3.1).
 - Deep Research engineering showcase write-up (`docs/showcase/deep-research-architecture.md`) — a public-facing narrative of the engine as built (M1–M10b): the four bands, the full node pipeline, an accurate Mermaid of the LangGraph topology (revision cycle + failure sink), and the §11 evidence-vs-inference "made structural" pattern across all five agents. Documentation only; no code change. Supports CLAUDE.md §12 (public showcase goal).
 
 - Apache License 2.0. `LICENSE` file at repo root; SPDX metadata in `backend/pyproject.toml` and `frontend/package.json`; reference in README.
