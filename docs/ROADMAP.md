@@ -54,6 +54,17 @@
   providers), progress → M13 (streaming API), `CANCELLED` → checkpointer milestone, quality
   gates/revision loops → M10 (Editorial Critic agent). The §5.6 "Orchestrator Agent" is aspirational
   until M10 gives it something to judge.
+- ✅ **Budget guardrails (`services/budget/`).** Estimated-spend metering + **enforcement** so
+  unattended runs can't overspend — the budgets half ADR 0005 deferred. A `BudgetTracker` accrues
+  call counts + estimated cost per-run / per-calendar-day (injected `Clock`) and raises
+  `BudgetExceededError` *before* a call breaches a ceiling (pre-call reservation; strict `>` boundary;
+  both ceilings optional + independent; unmodeled model fails loud, never silent $0). Cost via a
+  pluggable `CostEstimator` (`PerCallEstimator` / `TokenCostEstimator`) over a configurable
+  `PriceTable`. A `BudgetedModelProvider` decorator estimates → reserves → blocks before the wrapped
+  call, so a blocked call incurs no real spend. Estimate-vs-actual caveat documented (no token-usage
+  in the provider contract → a conservative ceiling, not an invoice). Hermetic (`FakeProvider` + stub
+  clock). **Capability only, no wiring** (M-LP pattern); the Orchestrator owns how to react to a block.
+  [ADR 0035](adrs/0035-budget-guardrails.md).
 
 ## Knowledge Acquisition band
 - ✅ **M5 — Source Discovery agent.** `SourceDiscoveryAgent` plans search queries via the
@@ -301,6 +312,22 @@
   without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
   configures the root logger idempotently; entrypoint wiring left as a one-line call.
   [ADR 0030](adrs/0030-structured-logging.md).
+
+## Topic / Trend Sourcing (CLAUDE.md §3.4 — pipeline front door)
+- ✅ **Topic / trend sourcing layer** (`backend/app/topics/`). The pipeline's front
+  door: niche/seed → ranked candidate video topics (the backlog's trend-awareness ask).
+  Both halves are *tools*, not agents (CLAUDE.md §4): a `TrendProvider` async protocol +
+  `Source`-shaped `TopicIdea` DTO (auto-minted `topic_…` id + required `sourced_via` — the
+  §11 anchor: tool-discovered, never LLM-invented), a hermetic `FakeTrendProvider`, an
+  `httpx` `HttpTrendProvider` over a generic trends/keyword REST shape (mirrors the search
+  adapters; MockTransport-hermetic + an integration smoke reading the key from the env, no
+  `config.py` change), and a pure deterministic `select_topics` (rank by provider `signal`
+  desc, explicit title/id tie-break, `None` lowest; de-dupe keeps the highest-signal idea
+  wholesale). The green-light *judgment* is a future content-strategy agent (§5.6) that
+  consumes this ordered output; the scheduler queue, a `Settings` field, and a provider
+  router are deferred follow-ups. Local `_gen_id` copy (ADR 0019 precedent) keeps the layer
+  standalone. [ADR 0037](adrs/0037-topic-trend-sourcing.md).
+
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
