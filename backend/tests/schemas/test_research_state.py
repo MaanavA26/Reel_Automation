@@ -11,11 +11,15 @@ from pydantic import ValidationError
 
 from app.schemas.research_state import (
     Chunk,
+    Critique,
+    CritiqueDecision,
     Evidence,
     Finding,
     JobStatus,
     KnowledgeAcquisitionState,
     KnowledgeReasoningState,
+    QualityIssue,
+    QualityIssueKind,
     ResearchPlan,
     ResearchState,
     Source,
@@ -45,6 +49,27 @@ def test_research_state_defaults() -> None:
     assert state.reasoning.verdicts == []
     assert isinstance(state.reasoning.synthesis, Synthesis)
     assert state.reasoning.synthesis.findings == []
+    assert state.reasoning.critiques == []
+
+
+def test_critique_roundtrips_under_strict_schema() -> None:
+    # M10: a Critique carries a code-derived decision + coverage and model-authored
+    # issues (ids code-attached); it must round-trip under extra="forbid".
+    critique = Critique(
+        decision=CritiqueDecision.REVISE,
+        uncovered_sub_question_ids=["sq_2"],
+        issues=[
+            QualityIssue(
+                kind=QualityIssueKind.OVERSTATED,
+                detail="overstates a disputed finding",
+                finding_ids=["fnd_1"],
+            )
+        ],
+        rationale="needs work",
+        critiqued_via="critique:fake-model",
+    )
+    assert critique.id.startswith("crit_")
+    assert Critique.model_validate(critique.model_dump()) == critique
 
 
 def test_finding_roundtrips_under_strict_schema() -> None:

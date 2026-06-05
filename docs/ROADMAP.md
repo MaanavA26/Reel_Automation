@@ -81,7 +81,21 @@
   non-omittably. New `Synthesis` substate (`reasoning.synthesis.findings`); `synthesize` node
   between verify→publish (now `plan→acquire→ingest→extract→verify→synthesize→publish`). Narrative
   layer + map-reduce deferred. [ADR 0011](adrs/0011-synthesis.md).
-- ⬜ **M10 — Editorial Critic + revision loop.** Gap analysis, quality judgment, bounded revision cycles.
+- ✅ **M10a — Editorial Critic (assessment).** Synthesis → `Critique` (`EditorialCriticAgent`,
+  `PLANNING` role). Agent/tool split: a deterministic `coverage` tool (`services/reasoning/`)
+  computes which sub-questions are uncovered; the agent judges quality (redundancy, balance,
+  clarity, overstated-vs-disputed prose). §11 keystone: coverage + the accept/revise `decision`
+  are **code-derived** (REVISE iff uncovered OR any issue), model authors only issues (by local
+  F#/S# index, code-validated) + rationale; a disputed finding alone is NOT a revise trigger. New
+  `Critique` substate (`reasoning.critiques`); `critique` node closes the band
+  (`…→synthesize→critique→publish`, still **linear** — `decision` recorded, not yet routed on).
+  [ADR 0012](adrs/0012-editorial-critic.md).
+- ⬜ **M10b — Revision loop.** The bounded `critique→synthesize` back-edge (first graph cycle):
+  top-level iteration counter + cap, `_route_on_critique` router (router owns termination),
+  explicit `recursion_limit` backstop, mandatory critique feed-forward into re-synthesis,
+  exhausted-completes-not-fails. No change to the M10a `Critique`/reasoning schema (one
+  additive top-level lifecycle scalar). Gated to its own PR (uncatchable `GraphRecursionError`
+  risk). [ADR 0012](adrs/0012-editorial-critic.md).
 
 ## Knowledge Publishing band
 - ⬜ **M11 — Report + structured export generation.** Research report, evidence map, contradiction/caveat list.
