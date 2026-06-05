@@ -36,9 +36,14 @@ def chunk_text(
     chunks: list[Chunk] = []
     position = 0
     start = 0
-    while start < len(cleaned):
+    while True:
         piece = cleaned[start : start + window]
         chunks.append(Chunk(source_id=source_id, text=piece, position=position))
         position += 1
+        # Stop once a chunk reaches the end of the text: the next window would
+        # span [start + step, len) ⊂ [start, len) — wholly contained in this
+        # chunk's overlap region — so it would add no new content.
+        if start + window >= len(cleaned):
+            break
         start += step
     return chunks
