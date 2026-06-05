@@ -139,6 +139,20 @@
   New `CreatorPacket`/`HookIdea`/`ContentAngle`/`NarrativeOption`/`KeyFact`/`CreatorWarning` schema
   + `publishing.packets`; dedicated `packet` node (`…→report→packet→publish`); 9th `ResearchDeps`
   field. A thin/heavily-warned packet is valid, not a failure. [ADR 0018](adrs/0018-creator-packet.md).
+- ✅ **Pre-publish content-safety guardrail.** A deterministic `PrePublishGate` *tool*
+  (`backend/app/safety/`, CLAUDE.md §4 — a policy check, no LLM) that ties the §11 code-derived
+  caveats/warnings to a single publish decision: given a `Report` + `CreatorPacket` +
+  `PublishCandidate` (script/metadata) it returns a typed `SafetyVerdict` (ALLOW / BLOCK / REVIEW)
+  whose decision is the max severity over an explained reason list. **BLOCK** on a disputed/
+  contradicted finding (report caveat or packet warning) or an `UNRESOLVED_CRITIQUE` banner without
+  a disclaimer; **REVIEW** on a configurable banned-keyword match (whole-word default) or below the
+  distinct-source grounding floor. Trusts the upstream non-omittable signals (no re-derivation);
+  explainable + configured via a frozen `GatePolicy` constructor arg (not `Settings`); pure +
+  fully unit-testable (id/timestamp-free verdict). Capability only — **not yet wired** into the
+  publishing band/endpoint. [ADR 0041](adrs/0041-pre-publish-safety.md).
+- ⬜ **Wire the gate as a publishing quality gate (deferred).** Call `PrePublishGate` after the
+  `packet` node (or at a publish endpoint) so a BLOCK verdict halts auto-publish; kept out of the
+  capability PR to keep the diff a self-contained package.
 
 ## Surface
 - 🔨 **M13 — API + job submission + frontend wiring (sync submit done).** `POST /api/v1/research`:
