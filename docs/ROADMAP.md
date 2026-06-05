@@ -90,12 +90,12 @@
   `Critique` substate (`reasoning.critiques`); `critique` node closes the band
   (`…→synthesize→critique→publish`, still **linear** — `decision` recorded, not yet routed on).
   [ADR 0012](adrs/0012-editorial-critic.md).
-- ⬜ **M10b — Revision loop.** The bounded `critique→synthesize` back-edge (first graph cycle):
-  top-level iteration counter + cap, `_route_on_critique` router (router owns termination),
-  explicit `recursion_limit` backstop, mandatory critique feed-forward into re-synthesis,
-  exhausted-completes-not-fails. No change to the M10a `Critique`/reasoning schema (one
-  additive top-level lifecycle scalar). Gated to its own PR (uncatchable `GraphRecursionError`
-  risk). [ADR 0012](adrs/0012-editorial-critic.md).
+- ✅ **M10b — Revision loop.** The bounded `critique→synthesize` back-edge (the graph's first
+  cycle): top-level `revision_iteration` counter + `max_syntheses` cap, `_make_critique_router`
+  (the router, not the agent, owns termination — model proposes revise, code decides), explicit
+  `recursion_limit` backstop, mandatory critique feed-forward into re-synthesis (`prior_critique`
+  on `SynthesisAgent`), exhausted-completes-not-fails. One additive top-level lifecycle scalar
+  (no change to the M10a `Critique`/reasoning schema). [ADR 0012](adrs/0012-editorial-critic.md).
 
 ## Knowledge Publishing band
 - ⬜ **M11 — Report + structured export generation.** Research report, evidence map, contradiction/caveat list.

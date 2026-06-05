@@ -350,6 +350,15 @@ class ResearchState(BaseModel):
     # M5/M7 fan-out reducer decision (same class as ADR 0002 §6).
     error: str | None = None
 
+    # Number of synthesis attempts performed, incremented once per Editorial
+    # Critic pass (M10b). Top-level lifecycle metadata like `error` (not a band
+    # substate, so ADR 0001's no-None-defaults rule does not apply), and placed
+    # top-level — *not* inside `reasoning` — so the synthesize node's `reasoning`
+    # channel rewrite on the revision back-edge cannot re-zero it. The critique
+    # node is its single writer. It bounds the `critique -> synthesize` cycle
+    # against a cap so the loop always terminates (ADR 0012).
+    revision_iteration: int = 0
+
     # Workflow order: plan -> acquisition -> reasoning. The publishing substate
     # slots in after reasoning in a subsequent PR (M11-M12).
     plan: ResearchPlan = Field(default_factory=ResearchPlan)

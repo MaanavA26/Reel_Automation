@@ -11,9 +11,11 @@ bound to a `ResearchPlannerAgent`, a `SourceDiscoveryAgent`, an
 `IngestionService`, an `EvidenceExtractionAgent`, a `CrossVerificationAgent`, a
 `SynthesisAgent`, and an `EditorialCriticAgent` respectively via factory-closure
 dependency injection (ADR 0004), bundled into a single `ResearchDeps` container
-(ADR 0009). The graph is linear at M10a; the bounded ``critique -> synthesize``
-revision loop is M10b (ADR 0012). The ``publish`` node remains a **lifecycle
-stub** — advancing ``status``/``updated_at`` and demonstrating the state-threading
+(ADR 0009). The ``critique`` node closes the band with the graph's first
+**cycle** (M10b): on ``revise`` it routes back to ``synthesize`` (feeding the
+critique forward), bounded by a ``max_syntheses`` cap so the loop always
+terminates (ADR 0012). The ``publish`` node remains a **lifecycle stub** —
+advancing ``status``/``updated_at`` and demonstrating the state-threading
 contract — until its owning milestone replaces it (M11-M12).
 
 ADRs: node I/O contract + partial-state-update protocol + fan-out deferral in
@@ -27,7 +29,7 @@ critic in ``0012-editorial-critic.md``.
 
 from __future__ import annotations
 
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
@@ -41,7 +43,7 @@ from app.agents.evidence_extraction import EvidenceExtractionAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.source_discovery import SourceDiscoveryAgent
 from app.agents.synthesis import SynthesisAgent
-from app.schemas.research_state import JobStatus, ResearchState
+from app.schemas.research_state import CritiqueDecision, JobStatus, ResearchState
 from app.services.ingestion.service import IngestionService
 
 # Node I/O contract (ADR 0002): every node is
@@ -185,7 +187,12 @@ def _make_synthesize_node(synthesizer: SynthesisAgent) -> _NodeFn:
     """
 
     async def synthesize_node(state: ResearchState) -> StateUpdate:
-        synthesis = await synthesizer.synthesize(state.plan, state.reasoning.verdicts)
+        # On a revision pass (M10b) feed the latest critique forward so
+        # re-synthesis addresses it; the first pass has no critique yet.
+        prior_critique = state.reasoning.critiques[-1] if state.reasoning.critiques else None
+        synthesis = await synthesizer.synthesize(
+            state.plan, state.reasoning.verdicts, prior_critique=prior_critique
+        )
         reasoning = state.reasoning.model_copy(update={"synthesis": synthesis})
         return {"reasoning": reasoning, "updated_at": datetime.now(UTC)}
 
@@ -193,15 +200,17 @@ def _make_synthesize_node(synthesizer: SynthesisAgent) -> _NodeFn:
 
 
 def _make_critique_node(critic: EditorialCriticAgent) -> _NodeFn:
-    """Build the Editorial Critic node (M10a), bound to a critic agent.
+    """Build the Editorial Critic node (M10), bound to a critic agent.
 
     Closes the Knowledge Reasoning band: assesses the synthesis for coverage and
     quality and appends a `Critique` to ``reasoning.critiques`` in a *single*
-    channel write. The critique's ``decision`` is **recorded, not yet routed on**
-    — this node routes forward to ``publish`` via the existing ``_route_on_status``
-    like every other band. The bounded revision loop that consumes ``decision``
-    (back-edge, iteration counter, feed-forward) is M10b; recording the decision
-    now mirrors ADR 0005 shipping ``error`` before its consumers (ADR 0012).
+    channel write. It is also the **sole writer of ``revision_iteration``**
+    (M10b): each pass increments the top-level counter that bounds the
+    ``critique -> synthesize`` revision cycle. The counter lives top-level (not on
+    ``reasoning``) so the synthesize node's ``reasoning`` rewrite on the back-edge
+    cannot re-zero it. The critic only proposes accept/revise via
+    ``critique.decision``; whether a revise is *permitted* is the router's call
+    (`_make_critique_router`) — model proposes, code decides (ADR 0012).
     """
 
     async def critique_node(state: ResearchState) -> StateUpdate:
@@ -209,7 +218,11 @@ def _make_critique_node(critic: EditorialCriticAgent) -> _NodeFn:
         reasoning = state.reasoning.model_copy(
             update={"critiques": [*state.reasoning.critiques, critique]}
         )
-        return {"reasoning": reasoning, "updated_at": datetime.now(UTC)}
+        return {
+            "reasoning": reasoning,
+            "revision_iteration": state.revision_iteration + 1,
+            "updated_at": datetime.now(UTC),
+        }
 
     return critique_node
 
@@ -270,7 +283,42 @@ def _route_on_status(state: ResearchState) -> Literal["continue", "failed"]:
     return "failed" if state.status is JobStatus.FAILED else "continue"
 
 
-def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
+# Default cap on synthesis attempts (the first synthesis + up to N-1 revisions).
+# Bounds the critique -> synthesize cycle so it always terminates (ADR 0012).
+DEFAULT_MAX_SYNTHESES = 2
+
+
+def _make_critique_router(
+    max_syntheses: int,
+) -> Callable[[ResearchState], Literal["failed", "revise", "accept", "exhausted"]]:
+    """Build the deterministic router for the revision loop (M10b, ADR 0012).
+
+    The **router**, not the critic agent, owns termination: the critic only
+    proposes ``ACCEPT``/``REVISE``; this router decides whether a ``REVISE`` is
+    *permitted*. Once ``revision_iteration`` reaches ``max_syntheses`` it forces
+    ``exhausted`` (→ publish a best-effort synthesis) regardless of the model's
+    decision, so the model can never keep the loop alive — the code-incremented
+    counter, not the model verdict, gates the back-edge. A revision-exhausted run
+    **completes** (it is not a failure — the M8/M9 "thin result is valid"
+    inversion applied to the loop); that the budget was exhausted is derivable
+    from ``revision_iteration == max_syntheses`` with the last critique still
+    ``REVISE``.
+    """
+
+    def route(state: ResearchState) -> Literal["failed", "revise", "accept", "exhausted"]:
+        if state.status is JobStatus.FAILED:
+            return "failed"
+        if state.revision_iteration >= max_syntheses:
+            return "exhausted"
+        latest = state.reasoning.critiques[-1]
+        return "revise" if latest.decision is CritiqueDecision.REVISE else "accept"
+
+    return route
+
+
+def build_research_graph(
+    deps: ResearchDeps, *, max_syntheses: int = DEFAULT_MAX_SYNTHESES
+) -> CompiledStateGraph:
     """Build and compile the Deep Research workflow graph.
 
     Topology: ``START -> plan -> acquire -> ingest -> extract -> verify ->
@@ -278,9 +326,13 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
     conditionally short-circuiting to a terminal ``failed`` sink if a node failed
     (ADR 0005). The ``plan``/``acquire``/``ingest``/``extract``/``verify``/
     ``synthesize``/``critique`` nodes are bound to their collaborators (from
-    ``deps``) via factory-closure DI (ADR 0004). The graph stays **linear** at
-    M10a — the bounded ``critique -> synthesize`` revision back-edge is M10b
-    (ADR 0012). Retries, budgets, ``CANCELLED`` are deferred (ADR 0005 § Deferred).
+    ``deps``) via factory-closure DI (ADR 0004).
+
+    M10b adds the first **cycle**: ``critique`` routes via `_make_critique_router`
+    to ``synthesize`` on ``revise`` (the back-edge), ``publish`` on
+    ``accept``/``exhausted``, or ``failed`` on a critic exception. The
+    ``max_syntheses`` cap bounds the cycle so it always terminates. Retries,
+    budgets, ``CANCELLED`` are deferred (ADR 0005 § Deferred).
     """
     graph = StateGraph(ResearchState)
     graph.add_node("plan", _with_failure_handling(_make_plan_node(deps.planner)))
@@ -294,6 +346,8 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
     graph.add_node("failed", failed_node)
 
     graph.add_edge(START, "plan")
+    # Linear bands route on status (continue/fail). ``critique`` is excluded — it
+    # routes on the editorial decision (revise/accept/exhausted) instead.
     bands = (
         ("plan", "acquire"),
         ("acquire", "ingest"),
@@ -301,7 +355,6 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
         ("extract", "verify"),
         ("verify", "synthesize"),
         ("synthesize", "critique"),
-        ("critique", "publish"),
     )
     for source, following in bands:
         graph.add_conditional_edges(
@@ -309,20 +362,45 @@ def build_research_graph(deps: ResearchDeps) -> CompiledStateGraph:
             _route_on_status,
             {"continue": following, "failed": "failed"},
         )
+    graph.add_conditional_edges(
+        "critique",
+        _make_critique_router(max_syntheses),
+        {
+            "revise": "synthesize",  # the revision back-edge (the cycle)
+            "accept": "publish",
+            "exhausted": "publish",
+            "failed": "failed",
+        },
+    )
     graph.add_edge("publish", END)
     graph.add_edge("failed", END)
     return graph.compile()
 
 
-async def run_research(state: ResearchState, *, deps: ResearchDeps) -> ResearchState:
+def _recursion_limit(max_syntheses: int) -> int:
+    """A loose `ainvoke` backstop above the legitimate worst-case super-step count.
+
+    The real termination guarantee is the code-incremented counter + router cap;
+    this only catches a guard *bug*. It must sit comfortably above the legit max
+    — the 6 pre-critique nodes + ``max_syntheses`` * (synthesize + critique) +
+    publish — so the router always fires first (a hit raises an uncatchable
+    ``GraphRecursionError``, so it must never be the real terminator). ADR 0012.
+    """
+    return 6 + 2 * max_syntheses + 1 + 10  # legit worst-case + generous margin
+
+
+async def run_research(
+    state: ResearchState, *, deps: ResearchDeps, max_syntheses: int = DEFAULT_MAX_SYNTHESES
+) -> ResearchState:
     """Run a research job end-to-end and return the final typed state.
 
     The graph is built per dependency-set (it closes over ``deps``), so there is
     no global compiled singleton; callers inject the dependencies a run needs.
     ``CompiledStateGraph.ainvoke`` returns a plain ``dict``; this entrypoint
     re-validates it back into a strict ``ResearchState``, which doubles as the
-    final ``extra='forbid'`` integrity gate.
+    final ``extra='forbid'`` integrity gate. An explicit ``recursion_limit``
+    backstops the revision cycle (ADR 0012).
     """
-    graph = build_research_graph(deps)
-    result = await graph.ainvoke(state)
+    graph = build_research_graph(deps, max_syntheses=max_syntheses)
+    result = await graph.ainvoke(state, config={"recursion_limit": _recursion_limit(max_syntheses)})
     return ResearchState.model_validate(result)

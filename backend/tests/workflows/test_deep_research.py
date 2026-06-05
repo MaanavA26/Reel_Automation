@@ -23,6 +23,7 @@ from app.agents.cross_verification import (
 from app.agents.editorial_critic import (
     EditorialCriticAgent,
     _CritiqueOutput,
+    _IssueDraft,
 )
 from app.agents.evidence_extraction import (
     EvidenceExtractionAgent,
@@ -44,7 +45,14 @@ from app.agents.synthesis import (
     _FindingDraft,
     _SynthesisOutput,
 )
-from app.schemas.research_state import JobStatus, ResearchState, SourceType, SupportLevel
+from app.schemas.research_state import (
+    CritiqueDecision,
+    JobStatus,
+    QualityIssueKind,
+    ResearchState,
+    SourceType,
+    SupportLevel,
+)
 from app.services.ingestion.base import FetchedContent
 from app.services.ingestion.fakes import FakeFetchProvider
 from app.services.ingestion.service import IngestionService
@@ -140,9 +148,15 @@ def _verifier() -> CrossVerificationAgent:
 
 
 def _synthesizer() -> SynthesisAgent:
-    """Synthesis agent: scripts one finding citing the first verdict + sub-question."""
+    """Synthesis agent: one finding covering every sub-question of the small test
+    plans (S0-S4; out-of-range indices are dropped), so the default happy path has
+    full coverage → the critic ACCEPTs → a single synthesis pass (no revision loop)."""
     output = _SynthesisOutput(
-        findings=[_FindingDraft(statement="finding", supporting_verdicts=[0], sub_questions=[0])]
+        findings=[
+            _FindingDraft(
+                statement="finding", supporting_verdicts=[0], sub_questions=[0, 1, 2, 3, 4]
+            )
+        ]
     )
     router = ModelRouter(
         providers={"fake": FakeProvider([output])},
@@ -261,6 +275,106 @@ def test_critique_node_populates_critique() -> None:
     c = final.reasoning.critiques[0]
     assert c.critiqued_via.startswith("critique:")
     assert c.decision is not None
+
+
+# --- M10b: the bounded revision loop (ADR 0012) -----------------------------
+
+
+def _synth_out(statement: str) -> _SynthesisOutput:
+    """A full-coverage synthesis output (covers S0-S4; extras dropped)."""
+    return _SynthesisOutput(
+        findings=[
+            _FindingDraft(
+                statement=statement, supporting_verdicts=[0], sub_questions=[0, 1, 2, 3, 4]
+            )
+        ]
+    )
+
+
+_REVISE = _CritiqueOutput(
+    issues=[_IssueDraft(kind=QualityIssueKind.UNCLEAR, detail="please clarify", findings=[0])],
+    rationale="needs revision",
+)
+_ACCEPT = _CritiqueOutput(issues=[], rationale="sound")
+
+
+def _loop_deps(
+    synth_outputs: list[_SynthesisOutput], critic_outputs: list[_CritiqueOutput]
+) -> tuple[ResearchDeps, FakeProvider, FakeProvider]:
+    """Deps whose synthesizer/critic replay the given scripts; returns the fakes
+    so a test can assert exact per-agent call counts across the loop."""
+    synth_fake = FakeProvider(synth_outputs)
+    critic_fake = FakeProvider(critic_outputs)
+    deps = ResearchDeps(
+        planner=_planner(),
+        discovery=_discovery(2),
+        ingestion=_ingestion(2),
+        extractor=_extractor(2),
+        verifier=_verifier(),
+        synthesizer=SynthesisAgent(
+            ModelRouter(
+                providers={"fake": synth_fake},
+                policy={ModelRole.LONG_CONTEXT: ModelChoice("fake", "long-context-model")},
+            )
+        ),
+        critic=EditorialCriticAgent(
+            ModelRouter(
+                providers={"fake": critic_fake},
+                policy={ModelRole.PLANNING: ModelChoice("fake", "planning-model")},
+            )
+        ),
+    )
+    return deps, synth_fake, critic_fake
+
+
+def test_revise_then_accept_runs_synthesis_twice() -> None:
+    # critique#1 REVISE -> re-synthesize -> critique#2 ACCEPT -> publish.
+    deps, synth_fake, critic_fake = _loop_deps(
+        [_synth_out("first"), _synth_out("second")], [_REVISE, _ACCEPT]
+    )
+    final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
+    assert len(synth_fake.calls) == 2
+    assert len(critic_fake.calls) == 2
+    assert final.status is JobStatus.COMPLETED
+    # the loop actually re-synthesized: the final synthesis is the 2nd response.
+    assert final.reasoning.synthesis.findings[0].statement == "second"
+    assert final.revision_iteration == 2  # counter survived the loop-back
+
+
+def test_feed_forward_critique_reaches_resynthesis_prompt() -> None:
+    # The anti-theater guard: the prior critique must be in the re-synthesis
+    # prompt, or the loop re-runs identical inputs and fixes nothing.
+    deps, synth_fake, _ = _loop_deps(
+        [_synth_out("first"), _synth_out("second")], [_REVISE, _ACCEPT]
+    )
+    asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
+    assert "needs revision" in synth_fake.calls[1].prompt
+    assert "please clarify" in synth_fake.calls[1].prompt
+
+
+def test_cap_exhausted_terminates_completed() -> None:
+    # The critic always asks to REVISE; the cap (default 2) must stop the loop and
+    # publish a best-effort synthesis rather than spin or crash.
+    deps, synth_fake, critic_fake = _loop_deps(
+        [_synth_out("first"), _synth_out("second")], [_REVISE, _REVISE]
+    )
+    final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
+    assert len(synth_fake.calls) == 2  # capped at max_syntheses, not more
+    assert len(critic_fake.calls) == 2
+    assert final.status is JobStatus.COMPLETED  # exhausted completes, not fails
+    assert final.revision_iteration == 2
+    # exhausted-vs-clean-accept is derivable: budget hit with the last verdict REVISE.
+    assert final.reasoning.critiques[-1].decision is CritiqueDecision.REVISE
+
+
+def test_accept_first_pass_runs_synthesis_once() -> None:
+    deps, synth_fake, critic_fake = _loop_deps([_synth_out("only")], [_ACCEPT])
+    final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
+    assert len(synth_fake.calls) == 1
+    assert len(critic_fake.calls) == 1
+    assert final.status is JobStatus.COMPLETED
+    assert final.revision_iteration == 1
+    assert final.reasoning.critiques[-1].decision is CritiqueDecision.ACCEPT
 
 
 def test_mixed_source_types_only_web_ingested() -> None:
