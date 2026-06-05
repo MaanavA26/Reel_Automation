@@ -22,6 +22,7 @@ from app.services.video.jobs import (
 from app.services.video.pipeline import (
     VideoArtifact,
     VideoPipeline,
+    VideoPipelineBundle,
     VideoPipelineError,
     build_video_pipeline,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "VideoJobStatus",
     "VideoJobStore",
     "VideoPipeline",
+    "VideoPipelineBundle",
     "VideoPipelineError",
     "build_video_pipeline",
 ]

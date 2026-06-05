@@ -267,6 +267,16 @@
     (lavfi inputs, skips without ffmpeg). No new dependency. [ADR 0023](adrs/0023-ffmpeg-composition.md).
   - ⬜ **TTS / visuals.** Real `TTSProvider` (ElevenLabs/Azure) and image/video generation-or-retrieval
     (Veo/stock) — still network-gated behind their protocols.
+  - ✅ **Agent-supervised TTS fabric.** `TTSRouter` (`backend/app/media/tts/router.py`) — deterministic
+    *tool* over named `TTSProvider`s + an ordered `fallback_order` policy (cheapest/most-local first:
+    kokoro → nvidia → huggingface); `synthesize` tries the chosen backend, then walks the rest on failure
+    until one succeeds, raising `TTSExhaustedError` only when all fail (full traversal vs the LLM
+    resilience single hop; chosen backend never tried twice). `TTSSupervisorAgent`
+    (`backend/app/agents/tts_supervisor.py`) — *judgment*: the `PLANNING`-role model picks backend + voice
+    from the router's *real* `available()` set (listed in-prompt), the choice is validated/clamped to the
+    default if invalid, then executed via the router. Agent proposes, router disposes + guarantees delivery.
+    Hermetic (`FakeTTSProvider`/`FakeProvider`, one failing); binds to the protocol so the sibling adapters
+    drop in. Capability only — not yet wired into `MediaPipeline`. [ADR 0049](adrs/0049-tts-fabric-supervisor.md).
   - ✅ **Visual / B-roll retrieval seam.** `backend/app/media/visuals/` — the retrieval half of the
     §3.3 "image/video retrieval" responsibility ADR 0019 deferred (the `visual_uris` producer for
     `CompositionService.render`). A `VisualProvider` protocol + a `VisualClip` DTO (`vis_`,
@@ -282,7 +292,29 @@
     adapter serves any compatible backend by config; bytes→`audio_uri` via an injected storage `sink`
     (descriptor-not-bytes invariant); `duration_ms` from an `X-Audio-Duration-Ms` header (fail-loud on
     absence); LLM-adapter hardening (`MockTransport`-tested, key-at-construction, integration smoke).
+    [ADR 0022](adrs/0022-tts-adapter.md). A sibling `HuggingFaceTtsProvider` (httpx, HF serverless
+    Inference API `POST /models/{model}`, `{"inputs": text}` → raw audio) runs narration off the
+    operator's existing `hf_` key — model-is-the-voice (construction-time), cold-start 503 raised (not
+    slept), `duration_ms` via a mockable `ffprobe -i pipe:0` seam. [ADR 0048](adrs/0048-huggingface-tts.md).
     [ADR 0022](adrs/0022-tts-adapter.md).
+  - ✅ **TTS (primary, local, zero-cost):** `KokoroTtsProvider` (`media/tts/kokoro.py`) — the Apache-2.0
+    [Kokoro-82M](https://hf.co/hexgrad/Kokoro-82M) model run **offline on CPU** via `kokoro-onnx` (no network,
+    no vendor, no per-call cost), the default narration backend. Pure/impure split (mirrors ffmpeg ADR 0023):
+    one impure `_create_waveform` seam (lazy-imported + cached `Kokoro`, `.create()` → `(samples, sample_rate)`)
+    + pure numpy-free WAV encode and **exact** samples/rate duration (no header, no `ffprobe`). Lazy-imported so
+    the module builds offline (fail-loud install hint); per-call `voice` wins; storage-neutral via the reused
+    `AudioSink` (→ `file://`); blocking inference off the event loop. Fully hermetic (waveform-seam mock, no
+    kokoro/onnx/numpy); live model path is a `@pytest.mark.integration` smoke gated on the package + model files.
+    Adapter only — no wiring/`config.py`/runtime-dep change. [ADR 0046](adrs/0046-kokoro-local-tts.md).
+  - ✅ **TTS (OpenAI):** `OpenAiTtsProvider` (httpx, real `POST /audio/speech` → raw audio bytes) — the
+    out-of-box adapter for any OpenAI-compatible backend, since real `/audio/speech` sends **no** duration
+    header. Computes `duration_ms` from the rendered audio with `ffprobe` (the already-required `ffmpeg`
+    binary's twin — no new dependency), via a pure `build_ffprobe_args`/`parse_ffprobe_duration_ms` split
+    from a single mockable `subprocess.run` seam (mirrors `ffmpeg.py`/ADR 0023; fail-loud on missing
+    binary/garbled output). Probes the **written file** through the injected storage `sink`, reusing the
+    composition adapter's `resolve_local_path`. Same LLM-adapter hardening + `MockTransport`/no-binary
+    hermetic tests + integration smoke. Adapter-only, no wiring/config change.
+    [ADR 0045](adrs/0045-openai-tts-adapter.md).
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
