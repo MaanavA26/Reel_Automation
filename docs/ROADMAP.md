@@ -54,6 +54,17 @@
   providers), progress → M13 (streaming API), `CANCELLED` → checkpointer milestone, quality
   gates/revision loops → M10 (Editorial Critic agent). The §5.6 "Orchestrator Agent" is aspirational
   until M10 gives it something to judge.
+- ✅ **Budget guardrails (`services/budget/`).** Estimated-spend metering + **enforcement** so
+  unattended runs can't overspend — the budgets half ADR 0005 deferred. A `BudgetTracker` accrues
+  call counts + estimated cost per-run / per-calendar-day (injected `Clock`) and raises
+  `BudgetExceededError` *before* a call breaches a ceiling (pre-call reservation; strict `>` boundary;
+  both ceilings optional + independent; unmodeled model fails loud, never silent $0). Cost via a
+  pluggable `CostEstimator` (`PerCallEstimator` / `TokenCostEstimator`) over a configurable
+  `PriceTable`. A `BudgetedModelProvider` decorator estimates → reserves → blocks before the wrapped
+  call, so a blocked call incurs no real spend. Estimate-vs-actual caveat documented (no token-usage
+  in the provider contract → a conservative ceiling, not an invoice). Hermetic (`FakeProvider` + stub
+  clock). **Capability only, no wiring** (M-LP pattern); the Orchestrator owns how to react to a block.
+  [ADR 0035](adrs/0035-budget-guardrails.md).
 
 ## Knowledge Acquisition band
 - ✅ **M5 — Source Discovery agent.** `SourceDiscoveryAgent` plans search queries via the
@@ -163,6 +174,13 @@
     construction, bounded generous timeout, typed `ReelAutomationAPIError` (status + parsed `detail`),
     injectable transport. Fully offline-tested via `httpx.MockTransport`; `examples/` are illustrative
     (not in CI). No `config.py`/`main.py`/`pyproject.toml`/`app/api/` change (client + examples only).
+    - 🔨 **M13 (durable job store):** `SqliteJobStore` (`backend/app/services/jobs/sqlite_store.py`) — the
+      durable backend ADR 0031 deferred. Same `enqueue`/`get`/`run` lifecycle, but persists the canonical
+      `ResearchState` JSON (`model_dump_json`/`model_validate_json`) to a stdlib-`sqlite3` file keyed by job
+      id, so jobs **survive process restarts**. A small `JobStoreBackend` protocol (`base.py`) is the
+      injectable seam both backends satisfy; the in-memory `JobStore` stays the default and the API is
+      unchanged. **Capability only — not yet wired** as the `app.state` default; still single-process (no
+      cross-worker). [ADR 0040](adrs/0040-sqlite-job-store.md).
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
@@ -177,6 +195,19 @@
       unsafe-claim **warnings** flagged prominently and cross-linked to creative elements by shared
       `finding_ids`. Adds `Report`/`Citation`/`Caveat`/`CreatorPacket` (+ siblings) TS types and the
       `publishing` substate; fixture extended. `npm run build` not runnable in the offline sandbox.
+    - 🔨 **M13 (frontend) — Studio view.** Operator control panel for producing + publishing videos
+      (`frontend/src/pages/StudioPage.tsx`, `components/studio/`, `types/video.ts`, `services/video.ts`).
+      Topic → kick off a video job → a `PipelineStages` strip (research → packet → script → render, each
+      with its own `JobStatus`) → preview the report/packet (reusing the existing `ReportView`/
+      `CreatorPacketView`) + a new `ScriptView` (narrative beats + `RenderedVideo` descriptor) → a
+      `PublishPanel` and `SchedulePanel` calling typed, **mockable** service methods (`submitVideoJob`/
+      `getVideoJob`/`publishVideo`/`scheduleVideo`, injectable transport, snake-case wire mirroring the
+      planned `POST /api/v1/videos` + `MediaPlan`/`RenderedVideo`). The §11 publish gate is load-bearing:
+      the packet's unsafe-claim warnings + the report's caveats render **inside** both the publish and
+      schedule panels (a scheduled publish is a publish action), adjacent to the button, gating the
+      action behind an explicit acknowledgment. Ships a `sampleVideo`
+      fixture (reusing `sampleResearch`) so the surface renders offline; backend routes deferred to a
+      sibling PR. `npm run build` passes (tsc + vite).
 
 ## Media Production Layer (CLAUDE.md §3.3 — second major component)
 > Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Introduced
@@ -226,6 +257,45 @@
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
+
+## Publishing / Social-Ops Layer (CLAUDE.md §3.4 — fourth major component)
+> Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Uploads a finished
+> `RenderedVideo` (Media layer artifact) to short-form platforms. Introduced via
+> [ADR 0033](adrs/0033-publishing-layer.md) per §3.4.
+- ✅ **Layer scaffold + first adapter.** `backend/app/publishing/` mirroring the search/visuals
+  fabric: a `PublishingProvider` protocol + `PublishTarget`/`PublishResult` DTOs (strict, id-prefixed
+  `pub_`, required `published_via` provenance; `privacy_status` defaults to `private`) + hermetic
+  `FakePublishingProvider`, all in `base.py`. The provider — never an LLM — mints the platform post
+  id/url (the §11 evidence boundary, publishing-side).
+- ✅ **YouTube Shorts publisher.** Real httpx `YouTubeShortsPublisher` over the YouTube Data API v3
+  **resumable upload** (initiate `POST …?uploadType=resumable&part=snippet,status` → read `Location`
+  session header → `PUT` raw bytes → map `id` to a `watch?v=` url); `#Shorts` appended to the
+  description. Storage-neutral via an injected `VideoSource` (read-side mirror of the TTS `AudioSink`).
+  Hardened like Brave/TTS (ADR 0021/0022): OAuth token at construction (no `Settings`/`config.py`
+  touch, no leak), bounded timeout, injectable client; operational failures propagate as `httpx`
+  errors, only a malformed shape wraps in `PublishError`. `MockTransport`-tested offline; a
+  side-effecting `@pytest.mark.integration` smoke test uploads a real `private` video, gated on
+  `REEL_YOUTUBE_ACCESS_TOKEN` + `REEL_YOUTUBE_TEST_VIDEO`. [ADR 0033](adrs/0033-publishing-layer.md).
+- ✅ **TikTok / Instagram Reels skeletons.** Protocol-conformant placeholders that raise
+  `PublishError("adapter pending")` — document the intended §3.4 platform coverage; concrete
+  create-container → publish adapters are drop-in follow-ups behind the protocol.
+- ⬜ **OAuth token refresh, composition-root wiring (+ `Settings` keys), chunked upload, TikTok/IG
+  concrete adapters.** Documented deferrals (ADR 0033) — added on demand, the wiring-free shape the
+  search/visuals adapters shipped in.
+## Automation / Orchestration fabric (CLAUDE.md §3.4 — future layer)
+> Deterministic *tools* (CLAUDE.md §4 — scheduling/batch execution, never agents).
+> Introduced via [ADR 0034](adrs/0034-scheduler.md) per §3.4/§16.
+- ✅ **Scheduler primitives.** `backend/app/scheduler/` — the unattended N-videos/day loop's
+  three composable, hermetic pieces: `Schedule` (**pure** `next_run_after(reference)`, no clock/sleep
+  — `IntervalSchedule` anchored slots + `DailySchedule` UTC times-of-day; strictly-after semantics,
+  naive-datetime rejection), `TopicQueue` (FIFO + priority backlog over `heapq` with a load-bearing
+  `(priority, seq, topic)` key), and `BatchRunner` (runs an **injected** `Produce` coroutine across a
+  batch under an `asyncio.Semaphore`, per-topic error isolation, submission-order `BatchResult`).
+  Decoupled from the real `VideoPipeline` via the injected callable. Stdlib only (no apscheduler/celery).
+  [ADR 0034](adrs/0034-scheduler.md).
+- 🔨 **Driver loop + real wiring (deferred).** The long-lived `while: sleep until next_run; drain;
+  run_batch` process (the only piece touching a real clock/sleep) and the binding of `Produce` to the
+  real `VideoPipeline` + publishing step — the follow-up that makes the loop runnable end-to-end.
 
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
@@ -301,11 +371,44 @@
   without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
   configures the root logger idempotently; entrypoint wiring left as a one-line call.
   [ADR 0030](adrs/0030-structured-logging.md).
+
+## Topic / Trend Sourcing (CLAUDE.md §3.4 — pipeline front door)
+- ✅ **Topic / trend sourcing layer** (`backend/app/topics/`). The pipeline's front
+  door: niche/seed → ranked candidate video topics (the backlog's trend-awareness ask).
+  Both halves are *tools*, not agents (CLAUDE.md §4): a `TrendProvider` async protocol +
+  `Source`-shaped `TopicIdea` DTO (auto-minted `topic_…` id + required `sourced_via` — the
+  §11 anchor: tool-discovered, never LLM-invented), a hermetic `FakeTrendProvider`, an
+  `httpx` `HttpTrendProvider` over a generic trends/keyword REST shape (mirrors the search
+  adapters; MockTransport-hermetic + an integration smoke reading the key from the env, no
+  `config.py` change), and a pure deterministic `select_topics` (rank by provider `signal`
+  desc, explicit title/id tie-break, `None` lowest; de-dupe keeps the highest-signal idea
+  wholesale). The green-light *judgment* is a future content-strategy agent (§5.6) that
+  consumes this ordered output; the scheduler queue, a `Settings` field, and a provider
+  router are deferred follow-ups. Local `_gen_id` copy (ADR 0019 precedent) keeps the layer
+  standalone. [ADR 0037](adrs/0037-topic-trend-sourcing.md).
+
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
   failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
   (CLAUDE.md §12). Tracks the engine through M10b.
+
+## Analytics / feedback loop (CLAUDE.md §3.4 — fourth layer)
+> Provider-neutral, deterministic **tools** (CLAUDE.md §4 — the *judgment* of which ranked
+> topics to pursue stays with an upstream agent). Introduced via [ADR 0036](adrs/0036-analytics-feedback.md).
+- ✅ **Stats seam + topic scorer.** `backend/app/analytics/` — pull published-video performance
+  back in to steer what gets made next. (1) A seam mirroring the search fabric: an
+  `AnalyticsProvider` protocol (`fetch_stats(*, post_id) -> VideoStats`) + a platform-pure
+  `VideoStats` DTO (platform `post_id` as the natural key — no synthetic id; `fetched_via`/`fetched_at`
+  provenance; watch-time absolute vs retention ratio kept distinct, both optional `| None`) + a
+  hermetic `FakeAnalyticsProvider` + a real httpx `YouTubeAnalyticsProvider` (single verified
+  `GET /v2/reports`, mapped by column name; Brave-style hardening — OAuth token at construction,
+  never leaked, `AnalyticsError` only on bad shape/not-found). (2) `feedback.score_topics` — an
+  explainable, **batch-independent** topic scorer (scale-free engagement/retention/views-saturation
+  components blended with named weights; `TopicScore` carries the breakdown — §11; score-desc with a
+  deterministic topic tie-break). Fully hermetic (`MockTransport` + pure scorer; live YouTube path is a
+  `@pytest.mark.integration` smoke). Capability only — no wiring (no `config.py`/`api/` change); adoption
+  is a later orchestrator/topic-queue change. [ADR 0036](adrs/0036-analytics-feedback.md).
 
 ---
 *Updated 2026-06-05. Deep Research milestone: **M12** (Creator packet) next; M1–M11 built. Separately, the **Media Production Layer** (CLAUDE.md §3.3, second major component) is seam-scaffolded — see its section above and [ADR 0019](adrs/0019-media-production-layer.md).*
