@@ -219,6 +219,18 @@
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
+- ✅ **Publishing-support surface — SEO metadata + thumbnail.** `backend/app/seo/` +
+  `backend/app/media/thumbnail.py` (CLAUDE.md §3.4): turn a `CreatorPacket` (+ source `Report`) into the
+  title / description / tags / hashtags and a thumbnail image that drive views. Both deterministic **tools**.
+  `MetadataBuilder` is a pure value derivation → a `VideoMetadata` value DTO (`produced_via="seo:deterministic"`):
+  title ≤100 chars (enforced invariant, word-boundary truncation), description hook→key-points→deduped-sources→
+  hashtags, stdlib stopword-tag floor, hashtags capped at 5 (verified: YouTube drops all >15). §11 carried to the
+  headline — a disputed hook/fact is never promoted to the title (transparency markers in the body instead).
+  `ThumbnailRenderer` mirrors the ffmpeg adapter (ADR 0023): pure `build_thumbnail_args` (frame extract + scale/pad +
+  `drawtext` from a `textfile=` sidecar, only the path escaped) split from a mockable `_run`; reuses
+  `resolve_local_path`; `fontfile` + dimensions parameterized (default 1280×720). One `ThumbnailError`. Hermetic
+  argv/error tests + a two-condition (`ffmpeg`+font) `@pytest.mark.integration` real render. No wiring/config/dep
+  change. LLM-polished copy deferred. [ADR 0039](adrs/0039-seo-thumbnail.md).
 
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
