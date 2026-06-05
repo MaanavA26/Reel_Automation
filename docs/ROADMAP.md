@@ -149,8 +149,17 @@
   + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
   carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
   Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
-- ⬜ **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
+- 🔨 **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
   image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+  - ✅ **Composition (ffmpeg).** `FfmpegCompositionService` (`backend/app/media/composition/ffmpeg.py`) —
+    first concrete `CompositionService`: assembles audio + `CaptionTrack` + visuals into a vertical MP4.
+    Pure `build_ffmpeg_args` (argv construction, fully unit-testable with no binary) split from a single
+    mockable `subprocess.run` execution seam; missing-binary/non-zero-exit → `CompositionError`
+    (`shlex.join`'d command + stderr tail). Duration mirrors narration; captions burned in via
+    `subtitles.format_srt`. Hermetic argv/error tests + `@pytest.mark.integration` real-render smoke
+    (lavfi inputs, skips without ffmpeg). No new dependency. [ADR 0023](adrs/0023-ffmpeg-composition.md).
+  - ⬜ **TTS / visuals.** Real `TTSProvider` (ElevenLabs/Azure) and image/video generation-or-retrieval
+    (Veo/stock) — still network-gated behind their protocols.
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
 
