@@ -279,6 +279,15 @@
     (descriptor-not-bytes invariant); `duration_ms` from an `X-Audio-Duration-Ms` header (fail-loud on
     absence); LLM-adapter hardening (`MockTransport`-tested, key-at-construction, integration smoke).
     [ADR 0022](adrs/0022-tts-adapter.md).
+  - ✅ **TTS (primary, local, zero-cost):** `KokoroTtsProvider` (`media/tts/kokoro.py`) — the Apache-2.0
+    [Kokoro-82M](https://hf.co/hexgrad/Kokoro-82M) model run **offline on CPU** via `kokoro-onnx` (no network,
+    no vendor, no per-call cost), the default narration backend. Pure/impure split (mirrors ffmpeg ADR 0023):
+    one impure `_create_waveform` seam (lazy-imported + cached `Kokoro`, `.create()` → `(samples, sample_rate)`)
+    + pure numpy-free WAV encode and **exact** samples/rate duration (no header, no `ffprobe`). Lazy-imported so
+    the module builds offline (fail-loud install hint); per-call `voice` wins; storage-neutral via the reused
+    `AudioSink` (→ `file://`); blocking inference off the event loop. Fully hermetic (waveform-seam mock, no
+    kokoro/onnx/numpy); live model path is a `@pytest.mark.integration` smoke gated on the package + model files.
+    Adapter only — no wiring/`config.py`/runtime-dep change. [ADR 0046](adrs/0046-kokoro-local-tts.md).
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
