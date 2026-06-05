@@ -78,6 +78,24 @@ def test_uses_planning_role_and_lists_real_backends_in_prompt() -> None:
     assert "my beat" in call.prompt
 
 
+def test_avoid_backends_is_threaded_into_the_prompt() -> None:
+    # The QA re-synthesis loop (ADR 0052) passes already-tried backends so the
+    # model steers away from them. The hint is advisory — it appears in the prompt
+    # but does not constrain the router's real options.
+    agent, fake_model, _ = _supervisor(_SupervisorChoice(backend="nvidia", voice="v"))
+    asyncio.run(agent.synthesize(text="beat", avoid_backends=["kokoro"]))
+    prompt = fake_model.calls[0].prompt
+    assert "kokoro" in prompt
+    assert "unsatisfactory" in prompt
+
+
+def test_empty_avoid_backends_preserves_original_prompt() -> None:
+    # The default empty avoid-set must not add the steer line (backward compat).
+    agent, fake_model, _ = _supervisor(_SupervisorChoice(backend="kokoro", voice="v"))
+    asyncio.run(agent.synthesize(text="beat"))
+    assert "unsatisfactory" not in fake_model.calls[0].prompt
+
+
 def test_fallback_still_guarantees_audio_when_chosen_backend_fails() -> None:
     # Even a *valid* choice whose backend fails must yield audio via the router's
     # deterministic fallback — the supervisor never returns without speech.
