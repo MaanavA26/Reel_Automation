@@ -136,9 +136,17 @@
   to a Docker-enabled run / the `docker-build.yml` CI job.
 - ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
   target is chosen; current workflow is build-only to keep zero auth/secret surface.
+## Showcase
+- 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
+  the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
+  failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
+  (CLAUDE.md §12). Tracks the engine through M10b.
 
 ---
-*Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
+*Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
++ M-LP.1 (LLM adapter) implemented; the Planner runs live (Gemini/Groq), the pipeline
+fetches+chunks real web sources, and synthesize→critique→(revise) runs end-to-end. Next:
+M11 (report/export).*
 
 > **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
 > and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are
