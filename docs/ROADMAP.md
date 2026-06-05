@@ -234,8 +234,12 @@
   + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
   carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
   Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
-- 🔨 **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
-  image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+- 🔨 **Concrete adapters.** Real `TTSProvider` (`NvidiaTtsProvider`, `backend/app/media/tts/nvidia.py` —
+  an `httpx` adapter over the operator's NVIDIA build / NIM key; raw audio bytes → injected `file://` sink →
+  `ffprobe` duration via the ADR 0023 pure/impure split; hardened/offline-tested like `http_tts`; hosted wire
+  contract is a documented assumption the live smoke confirms; [ADR 0047](adrs/0047-nvidia-tts.md)),
+  `CompositionService` (real ffmpeg), image/video generation-or-retrieval (Veo/stock) — behind the protocols,
+  network/binary-gated.
 - ✅ **Creator-packet → media handoff contract.** `MediaPipeline` (`backend/app/media/pipeline.py`) — a
   deterministic tool (no LLM) that maps a `CreatorPacket` to a `MediaPlan` (assembled-video descriptor):
   selects a `NarrativeOption` → synthesizes narration once (`TTSProvider`) → allocates caption timings by
