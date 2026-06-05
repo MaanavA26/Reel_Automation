@@ -72,7 +72,15 @@
   (`plan→acquire→ingest→extract→verify→publish`). Thin support is a valid result (not a
   failure); fan-out reducer/concurrency deferred to the checkpointer milestone.
   [ADR 0010](adrs/0010-cross-verification.md).
-- ⬜ **M9 — Synthesis agent.** Evidence map → structured synthesis.
+- ✅ **M9 — Synthesis agent.** Verdicts → plan-anchored `Finding`s (`SynthesisAgent`,
+  `LONG_CONTEXT` role). A single model call over the already-reduced verdict set (pure agent,
+  no tool); the model authors prose + local indices, code resolves/validates verdict + sub-question
+  ids (two separate index spaces). §11 keystone: the grounding summary (`disputed`,
+  `weakest_support`) is **code-derived** from the cited verdicts — the model gets no self-report
+  field, so a finding can't overstate its grounding and the caveat is carried forward
+  non-omittably. New `Synthesis` substate (`reasoning.synthesis.findings`); `synthesize` node
+  between verify→publish (now `plan→acquire→ingest→extract→verify→synthesize→publish`). Narrative
+  layer + map-reduce deferred. [ADR 0011](adrs/0011-synthesis.md).
 - ⬜ **M10 — Editorial Critic + revision loop.** Gap analysis, quality judgment, bounded revision cycles.
 
 ## Knowledge Publishing band

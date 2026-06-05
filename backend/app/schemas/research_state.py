@@ -152,19 +152,71 @@ class Verdict(BaseModel):
     verified_via: str
 
 
+class Finding(BaseModel):
+    """A synthesized answer-unit — the synthesis band's second-order inference (M9).
+
+    A `Verdict` judges *one cluster of evidence* (do sources agree?). A `Finding`
+    composes *multiple verdicts* into an answer addressed to the research plan
+    (what does the cross-checked corpus say about a sub-question?). It is
+    inference built on inference, so the §11 boundary is enforced exactly as for
+    `Verdict`: the model authors prose only; every id is code-attached and
+    code-validated against the real `Verdict`/`SubQuestion` sets, and the
+    grounding summary (``disputed`` / ``weakest_support``) is **code-derived**
+    from the cited verdicts — the model is given no field to self-report it. A
+    `Finding` can therefore never cite a verdict the model invented, nor overstate
+    its grounding past what its verdicts support. See ADR 0011.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("fnd"))
+    # model-authored prose:
+    statement: str
+    detail: str | None = None
+    # code-attached id references (resolved from local indices, validated):
+    sub_question_ids: list[str] = Field(default_factory=list)
+    supporting_verdict_ids: list[str] = Field(default_factory=list)
+    # code-derived grounding summary (never model-authored):
+    disputed: bool  # True iff any cited verdict is CONTRADICTED
+    weakest_support: SupportLevel  # floor over the cited verdicts' support levels
+    synthesized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    synthesized_via: str
+
+
+class Synthesis(BaseModel):
+    """The synthesis band's output container (M9).
+
+    Holds the plan-anchored `Finding`s — each links the `SubQuestion`(s) it
+    addresses, so M10 (Editorial Critic) can check coverage structurally and M11
+    can render answer-by-question. An emergent narrative layer (cross-cutting
+    summary, key takeaways) is deliberately **deferred** to its real consumer
+    (M11/M12 publishing): it would be ungrounded model prose, the very
+    self-report this band is built to deny, so it waits for a consumer rather
+    than shipping speculatively (cf. deferred `Chunk.parsed_via`, ADR 0008).
+
+    No id: a band substate (symmetric with the other bands' substates), not a
+    first-class artifact. Empty ``findings`` reads as "synthesis has not run."
+    """
+
+    model_config = _STRICT
+
+    findings: list[Finding] = Field(default_factory=list)
+
+
 class KnowledgeReasoningState(BaseModel):
     """State produced by the Knowledge Reasoning band of Deep Research.
 
-    v1 (M8 Cross-Verification) carries only cross-checked `Verdict`s. Synthesis,
-    gap analysis, and revision artifacts (M9-M10) slot in here as additional
-    fields in their owning milestones — same empty-substate convention as the
-    other bands (ADR 0001): an empty ``verdicts`` list reads as "reasoning has
-    not run," not "reasoning produced nothing."
+    Carries the cross-checked `Verdict`s (M8) and the `Synthesis` built on them
+    (M9). Gap analysis and revision artifacts (M10) slot in here as additional
+    fields in their owning milestone — same empty-substate convention as the
+    other bands (ADR 0001): an empty ``verdicts`` / ``synthesis.findings`` reads
+    as "that step has not run," not "it produced nothing."
     """
 
     model_config = _STRICT
 
     verdicts: list[Verdict] = Field(default_factory=list)
+    synthesis: Synthesis = Field(default_factory=Synthesis)
 
 
 class SubQuestion(BaseModel):

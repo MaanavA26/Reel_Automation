@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from app.schemas.research_state import (
     Chunk,
     Evidence,
+    Finding,
     JobStatus,
     KnowledgeAcquisitionState,
     KnowledgeReasoningState,
@@ -21,6 +22,7 @@ from app.schemas.research_state import (
     SourceType,
     SubQuestion,
     SupportLevel,
+    Synthesis,
     Verdict,
 )
 
@@ -41,6 +43,23 @@ def test_research_state_defaults() -> None:
     assert state.acquisition.evidence == []
     assert isinstance(state.reasoning, KnowledgeReasoningState)
     assert state.reasoning.verdicts == []
+    assert isinstance(state.reasoning.synthesis, Synthesis)
+    assert state.reasoning.synthesis.findings == []
+
+
+def test_finding_roundtrips_under_strict_schema() -> None:
+    # M9: a Finding references verdicts/sub-questions by id and carries the
+    # code-derived grounding summary; it must round-trip under extra="forbid".
+    finding = Finding(
+        statement="synthesized finding",
+        sub_question_ids=["sq_1"],
+        supporting_verdict_ids=["vd_1", "vd_2"],
+        disputed=True,
+        weakest_support=SupportLevel.CONTRADICTED,
+        synthesized_via="synthesis:fake-model",
+    )
+    assert finding.id.startswith("fnd_")
+    assert Finding.model_validate(finding.model_dump()) == finding
 
 
 def test_verdict_roundtrips_under_strict_schema() -> None:
