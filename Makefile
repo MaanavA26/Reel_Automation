@@ -61,6 +61,16 @@ test: ## Run the backend test suite (pytest).
 check: ## Run all backend gates exactly as CI does (non-mutating).
 	$(BACKEND_RUN) && ruff check . && ruff format --check . && mypy && pytest
 
+# --- Video pipeline (end-to-end; ADR 0032) -----------------------------------
+
+.PHONY: doctor
+doctor: ## Preflight: check readiness for `make video` (no paid/network calls).
+	$(BACKEND_RUN) && python -m app.cli.doctor
+
+.PHONY: video
+video: ## Render a short-form video from a topic: make video TOPIC="your topic".
+	$(BACKEND_RUN) && python -m app.cli.make_video "$(TOPIC)"
+
 # --- Frontend ----------------------------------------------------------------
 
 .PHONY: frontend-build

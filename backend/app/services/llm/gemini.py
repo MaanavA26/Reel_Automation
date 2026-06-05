@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.services.llm.base import StructuredT
 
 PROVIDER_NAME = "gemini"
@@ -45,7 +46,7 @@ class GeminiError(RuntimeError):
     """Raised on transport failure or output that fails validation after repair."""
 
 
-class GeminiProvider:
+class GeminiProvider(CloseOwnedClientMixin):
     """A ``ModelProvider`` over the Gemini ``generateContent`` REST API."""
 
     name = PROVIDER_NAME
@@ -63,6 +64,7 @@ class GeminiProvider:
             raise GeminiError("api_key is required (set REEL_AUTOMATION_GEMINI_API_KEY)")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._max_repair_retries = max_repair_retries
 
