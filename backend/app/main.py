@@ -12,6 +12,7 @@ from app.api.research import composition_error_handler
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.lifecycle import AsyncClosable
+from app.review import ReviewService
 from app.services.composition import CompositionError
 from app.services.jobs import JobStore
 from app.services.video import VideoJobStore
@@ -82,6 +83,10 @@ def create_app() -> FastAPI:
     # The video-band async surface gets its own process-singleton store (ADR 0032),
     # symmetric with the research job store above.
     application.state.video_job_store = VideoJobStore()
+    # The human-review / approval gate's store (ADR 0051): one process-singleton
+    # so submit/list/decide share state, symmetric with the job stores above. The
+    # in-memory store has nothing to close, so it is not added to the shutdown path.
+    application.state.review_service = ReviewService()
     # App-scoped, lazily-built provider bundles (ADR 0044). The deps/pipeline are
     # built once on first request (the composition root can raise when unwired, so
     # they are not built eagerly here); each build appends its httpx-owning

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from app.review import ReviewService
 from app.services.composition import build_research_deps
 from app.services.jobs import JobStore
 from app.services.video import VideoJobStore, VideoPipeline, build_video_pipeline
@@ -85,3 +86,16 @@ def get_video_job_store(request: Request) -> VideoJobStore:
     """
     store: VideoJobStore = request.app.state.video_job_store
     return store
+
+
+def get_review_service(request: Request) -> ReviewService:
+    """Provide the process-singleton `ReviewService` held on ``app.state``.
+
+    The human-review gate analogue of `get_job_store` (ADR 0051): stateful, one
+    instance per process (submit, list, and decide must hit the same dict),
+    created once in `app.main.create_app` and read off ``request.app.state``
+    here. Tests override this provider with a pre-seeded service via
+    `app.dependency_overrides`.
+    """
+    service: ReviewService = request.app.state.review_service
+    return service
