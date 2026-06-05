@@ -149,8 +149,18 @@
   + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
   carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
   Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
-- ⬜ **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
+- 🔨 **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
   image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+  - ✅ **Visual / B-roll retrieval seam.** `backend/app/media/visuals/` — the retrieval half of the
+    §3.3 "image/video retrieval" responsibility ADR 0019 deferred (the `visual_uris` producer for
+    `CompositionService.render`). A `VisualProvider` protocol + a `VisualClip` DTO (`vis_`,
+    `extra='forbid'`, required `produced_via`; `kind`/`width`/`height`/optional `duration_ms`/`attribution`)
+    + a hermetic `FakeVisualProvider`, mirroring the search fabric (DTO beside its protocol in `base.py`).
+    Real httpx `StockVisualProvider` over Pexels `GET /videos/search` (Brave-style hardening: key at
+    construction, never leaked; injectable client; `per_page` clamp; `VisualError` only on bad shape).
+    The tool, never the LLM, mints the asset `uri`. Offline `MockTransport` tests +
+    `@pytest.mark.integration` live (`REEL_AUTOMATION_STOCK_API_KEY`). Adapter-only, no wiring/config
+    change. [ADR 0024](adrs/0024-visual-retrieval.md).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
 
