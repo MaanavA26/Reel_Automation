@@ -13,6 +13,8 @@ are not yet part of a tagged release. When cutting a release, move the
 
 ### Added
 
+- Deterministic `Report` renderers (`backend/app/services/publishing/markdown.py`, `html.py`) — pure, stdlib-only `render_markdown(report)` / `render_html(report)` tools (CLAUDE.md §4) that project a typed `Report` into a readable document: title, abstract, sections, a References bibliography from `report.citations` (with source urls), and a Limitations section from `report.caveats`. Citations and caveats **always render** when non-empty — the §11 non-omittability of provenance and caveats carried to the output surface; the renderer fabricates nothing beyond the `Report`. `render_html` escapes all model/user text (`html.escape`, `quote=True` for the `href` attribute context). Fulfills [ADR 0017](docs/adrs/0017-report-generation.md)'s deferred Markdown/HTML renderer (the consumer has arrived).
+
 - Deep Research engineering showcase write-up (`docs/showcase/deep-research-architecture.md`) — a public-facing narrative of the engine as built (M1–M10b): the four bands, the full node pipeline, an accurate Mermaid of the LangGraph topology (revision cycle + failure sink), and the §11 evidence-vs-inference "made structural" pattern across all five agents. Documentation only; no code change. Supports CLAUDE.md §12 (public showcase goal).
 
 - Apache License 2.0. `LICENSE` file at repo root; SPDX metadata in `backend/pyproject.toml` and `frontend/package.json`; reference in README.

@@ -106,8 +106,11 @@
   the **full** findings set (so an uncited disputed finding still surfaces) and the
   `UNRESOLVED_CRITIQUE` banner fires when the revision loop exhausted unsatisfied (fulfilling
   ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
-  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
-  creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
+  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Creator-packet fields
+  deferred to M12. Deterministic `render_markdown` / `render_html` renderers
+  (`services/publishing/markdown.py`, `html.py`) now fulfil ADR 0017's deferred renderer — citations
+  and caveats always render (the §11 non-omittability carried to the output surface), HTML escapes
+  all text. [ADR 0017](adrs/0017-report-generation.md).
 - ✅ **M12 — Creator packet + downstream handoff artifacts.** Report + findings → a short-form
   `CreatorPacket` (`CreatorPacketAgent`, the Short-Form Content Strategist, `LONG_CONTEXT` role) —
   hook ideas, content angles, short narrative options (model creative prose) + **code-derived key
