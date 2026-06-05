@@ -161,6 +161,13 @@
   Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
 - 🔨 **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
   image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+- ✅ **Creator-packet → media handoff contract.** `MediaPipeline` (`backend/app/media/pipeline.py`) — a
+  deterministic tool (no LLM) that maps a `CreatorPacket` to a `MediaPlan` (assembled-video descriptor):
+  selects a `NarrativeOption` → synthesizes narration once (`TTSProvider`) → allocates caption timings by
+  cumulative integer boundaries (invariant `cues[-1].end_ms == audio.duration_ms == video.duration_ms`) →
+  builds the track (`DeterministicSubtitleService`) → composes (`CompositionService`). DI + skip/raise mirror
+  `IngestionService`; the single, deliberate ADR 0019 §4 coupling exception (only this file imports the Deep
+  Research schema). `visual_uris` pass through (sourcing still deferred). [ADR 0025](adrs/0025-media-pipeline.md).
   - ✅ **Composition (ffmpeg).** `FfmpegCompositionService` (`backend/app/media/composition/ffmpeg.py`) —
     first concrete `CompositionService`: assembles audio + `CaptionTrack` + visuals into a vertical MP4.
     Pure `build_ffmpeg_args` (argv construction, fully unit-testable with no binary) split from a single
