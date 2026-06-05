@@ -121,6 +121,10 @@
     composition root + `python -m app.cli.plan` harness + `@pytest.mark.integration` live test.
     **The Planner is now runnable against a real free LLM.** [ADR 0007](adrs/0007-openai-compatible-llm-adapter.md).
   - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
+    - ✅ **Brave:** `BraveSearchProvider` (httpx, `GET /res/v1/web/search`, `X-Subscription-Token`) —
+      a second concrete provider for failover/robustness, `web.results[]` → `SearchResult`, `count`
+      clamped to 20, offline-tested via `MockTransport` + a `@pytest.mark.integration` smoke test.
+      [ADR 0021](adrs/0021-brave-search-adapter.md).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
 
