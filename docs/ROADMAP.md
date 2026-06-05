@@ -102,7 +102,13 @@
 - ⬜ **M12 — Creator packet + downstream handoff artifacts.** Hooks, angles, key facts, narrative options; unsafe-claim warnings.
 
 ## Surface
-- ⬜ **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
+- 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
+  - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
+    `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
+    (injectable transport, snake-case wire contract mirroring `ResearchState`), presentation decoupled
+    from the API, findings rendered with honest `disputed`/`weakest_support` flags (§11). Ships a sample
+    fixture so the surface renders before the submit route lands. Backend route + streaming deferred to
+    the M13 (backend) PR.
 
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
