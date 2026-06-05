@@ -142,9 +142,7 @@ def _check_search_provider(settings: Settings) -> CheckResult:
         return CheckResult(label, True)
 
     known = ", ".join(sorted({TavilySearchProvider.name, BraveSearchProvider.name}))
-    return CheckResult(
-        label, False, f"set REEL_AUTOMATION_SEARCH_PROVIDER to one of: {known}"
-    )
+    return CheckResult(label, False, f"set REEL_AUTOMATION_SEARCH_PROVIDER to one of: {known}")
 
 
 def _check_tts(settings: Settings) -> CheckResult:
