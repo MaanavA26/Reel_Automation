@@ -98,7 +98,16 @@
   (no change to the M10a `Critique`/reasoning schema). [ADR 0012](adrs/0012-editorial-critic.md).
 
 ## Knowledge Publishing band
-- ⬜ **M11 — Report + structured export generation.** Research report, evidence map, contradiction/caveat list.
+- ✅ **M11 — Report generation.** Reasoning output → a structured, source-grounded `Report`
+  (`ReportAgent`, `LONG_CONTEXT` role) — title/abstract/sections (model prose) + a code-derived
+  citation bibliography (walked `Finding→Verdict→Evidence→Source`, snapshotted for export) + a
+  **code-derived, non-omittable caveats list**. Agent/tool split: prose is the agent;
+  `services/publishing/` (citations, caveats) is deterministic. §11 keystone: caveats range over
+  the **full** findings set (so an uncited disputed finding still surfaces) and the
+  `UNRESOLVED_CRITIQUE` banner fires when the revision loop exhausted unsatisfied (fulfilling
+  ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
+  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
+  creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
 - ⬜ **M12 — Creator packet + downstream handoff artifacts.** Hooks, angles, key facts, narrative options; unsafe-claim warnings.
 
 ## Surface
@@ -121,8 +130,29 @@
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
 
+## Ops / Infrastructure
+- ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
+  `app.main:app`, `/api/v1/health` HEALTHCHECK) + `frontend/Dockerfile` (node build → nginx
+  static serve, SPA fallback) + root `docker-compose.yml` (backend + frontend, `depends_on`
+  health, `env_file: backend/.env`) + per-context `.dockerignore` + a build-only
+  `.github/workflows/docker-build.yml` (PR/push to `main`, no registry push). No app-code or
+  `ci.yml` changes. **Run locally:** `cp backend/.env.example backend/.env && docker compose up
+  --build` → backend `http://localhost:8000`, frontend `http://localhost:8080`. Images were
+  authored offline (no Docker daemon in the sandbox); the first real `docker build` is deferred
+  to a Docker-enabled run / the `docker-build.yml` CI job.
+- ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
+  target is chosen; current workflow is build-only to keep zero auth/secret surface.
+## Showcase
+- 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
+  the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
+  failure sink), and the §11 evidence-vs-inference "made structural" pattern. Public-facing
+  (CLAUDE.md §12). Tracks the engine through M10b.
+
 ---
-*Updated 2026-06-04. Current milestone: **M7** (Evidence Extraction). M1–M6 + M-LP.1 (LLM adapter) merged to `main`; the Planner runs live (Gemini/Groq), and the pipeline now fetches+chunks real web sources.*
+*Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
++ M-LP.1 (LLM adapter) implemented; the Planner runs live (Gemini/Groq), the pipeline
+fetches+chunks real web sources, and synthesize→critique→(revise) runs end-to-end. Next:
+M11 (report/export).*
 
 > **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
 > and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are

@@ -282,6 +282,133 @@ class KnowledgeReasoningState(BaseModel):
     critiques: list[Critique] = Field(default_factory=list)
 
 
+class CaveatKind(StrEnum):
+    """Code-derived class of a published-report caveat (M11).
+
+    Machine-readable so downstream (M12 creator packet) can surface
+    "unsafe/unverified claim warnings" (CLAUDE.md §5.4) without re-deriving. Every
+    member is **code-derived** from the reasoning state at publish time — never
+    model-authored — which is what makes a report's limitations non-omittable.
+    """
+
+    DISPUTED_FINDING = "disputed_finding"  # a finding rests on contradictory sources
+    WEAK_SUPPORT = "weak_support"  # a finding is single-source (not disputed)
+    UNCOVERED_SUB_QUESTION = "uncovered_sub_question"  # sub-question(s) with no finding
+    QUALITY_ISSUE = "quality_issue"  # an editorial quality issue (M10) carried forward
+    UNRESOLVED_CRITIQUE = "unresolved_critique"  # revision exhausted: last critique == REVISE
+
+
+class Caveat(BaseModel):
+    """A code-derived limitation/warning on a published report (M11).
+
+    The §11 keystone of the publishing band: the model gets **no field** to
+    author or omit this. Derived at publish time from the *full* synthesis
+    findings (disputed/weak support) and the last `Critique` (uncovered
+    sub-questions, quality issues, and the exhausted-revision banner) — so a
+    polished report can never bury its contradictions. The M11 analog of M9's
+    code-derived ``disputed`` and M10's ``uncovered_sub_question_ids``; it
+    fulfills ADR 0012's promise to carry an unsatisfied critique forward as a
+    non-omittable caveat. ``detail`` is code-templated, not model prose. See
+    ADR 0017.
+    """
+
+    model_config = _STRICT
+
+    kind: CaveatKind
+    detail: str
+    finding_ids: list[str] = Field(default_factory=list)
+    sub_question_ids: list[str] = Field(default_factory=list)
+    critique_id: str | None = None
+
+
+class Citation(BaseModel):
+    """A source-grounded reference in a published report (M11).
+
+    **Code-resolved, never model-authored:** built by walking the provenance
+    chain ``Finding -> supporting_verdict_ids -> Verdict -> evidence_ids ->
+    Evidence -> source_id -> Source``. The model authors no url/title, so a
+    fabricated citation in a published report is unrepresentable (the §11 guard,
+    one layer past M9/M10). Carries a **code-copied snapshot** (``source_url`` /
+    ``title``) rather than only a by-id ref — the deliberate inverse of
+    `Verdict`/`Finding`, justified by ADR 0001's attached-provenance rationale:
+    the report is the band-D *export* artifact designed to leave the container,
+    so it must be readable in isolation. ``source_id`` is retained for re-join.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("cit"))
+    source_id: str
+    source_url: str
+    source_type: SourceType
+    title: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    verdict_ids: list[str] = Field(default_factory=list)
+
+
+class ReportSection(BaseModel):
+    """One section of a report, anchored to the plan by sub-question id (M11).
+
+    The model authors ``heading`` + ``narrative`` (prose) and references findings
+    only by *local index*; code resolves those to ``finding_ids`` (out-of-range
+    dropped) and derives ``sub_question_ids`` from the cited findings — a *single*
+    model index space, so the M9 two-index cross-resolution hazard cannot arise. A
+    section resolving to zero real findings is dropped (the M9/M10 drop-empty
+    guard, one layer up).
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("sec"))
+    heading: str
+    narrative: str
+    finding_ids: list[str] = Field(default_factory=list)
+    sub_question_ids: list[str] = Field(default_factory=list)
+
+
+class Report(BaseModel):
+    """A structured, source-grounded research report — the band-D export artifact (M11).
+
+    The most-polished, most-downstream *inference* artifact (§11). The boundary
+    is held one layer past M10: the model authors prose (``title``, ``abstract``,
+    section ``heading``/``narrative``); ids are code-attached/validated; and the
+    ``citations`` bibliography and ``caveats`` list are **code-derived** (the
+    model gets no field for either). Code guarantees citation + caveat
+    *integrity*, not narrative *fidelity* — the ``abstract`` is model prose and
+    may still phrase a finding more confidently than its support warrants (the
+    same OVERSTATED-prose limit M9/M10 acknowledged); the non-omittable
+    code-derived ``caveats`` is the structural counterweight. See ADR 0017.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("rpt"))
+    title: str
+    abstract: str
+    sections: list[ReportSection] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
+    caveats: list[Caveat] = Field(default_factory=list)
+    published_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    published_via: str
+
+
+class ResearchPublishingState(BaseModel):
+    """State produced by the Research Publishing band of Deep Research (M11).
+
+    ``reports`` is a list (not a single `Report`) — forced, not chosen, by the
+    same constraints as `KnowledgeReasoningState.critiques`: a `Report` has
+    required fields so it cannot be a ``default_factory`` default, and
+    ``| None`` is barred by ADR 0001's no-None-defaults rule. The empty list is
+    the "publish has not run" signal, and it gives a re-publish/regeneration
+    audit trail for free. A job is conceptually single-report; the list is a
+    mechanical consequence of those constraints.
+    """
+
+    model_config = _STRICT
+
+    reports: list[Report] = Field(default_factory=list)
+
+
 class SubQuestion(BaseModel):
     """A decomposed question within a research plan.
 
@@ -367,4 +494,7 @@ class ResearchState(BaseModel):
     )
     reasoning: KnowledgeReasoningState = Field(
         default_factory=KnowledgeReasoningState,
+    )
+    publishing: ResearchPublishingState = Field(
+        default_factory=ResearchPublishingState,
     )
