@@ -4,8 +4,9 @@ These tests assert the *state-threading contract* every node depends on:
 lifecycle transitions, job-identity stability, that list-channel writes survive
 the merge, that the final state re-validates under the strict schema, and that
 the real ``plan`` (M3) / ``acquire`` (M5) / ``ingest`` (M6) / ``extract`` (M7) /
-``verify`` (M8) / ``synthesize`` (M9) / ``critique`` (M10a) nodes populate state
-end-to-end. They run the real compiled graph with `FakeProvider`-backed agents +
+``verify`` (M8) / ``synthesize`` (M9) / ``critique`` (M10a) / ``report`` (M11) /
+``packet`` (M12) nodes populate state end-to-end. They run the real compiled graph
+with `FakeProvider`-backed agents +
 fakes (hermetic — no network) and drive the async entrypoint with ``asyncio.run``
 (no ``pytest-asyncio`` dependency required). Dependencies are injected as a single
 `ResearchDeps` bundle (ADR 0009).
@@ -15,6 +16,11 @@ from __future__ import annotations
 
 import asyncio
 
+from app.agents.creator_packet import (
+    CreatorPacketAgent,
+    _HookDraft,
+    _PacketOutput,
+)
 from app.agents.cross_verification import (
     CrossVerificationAgent,
     _VerdictDraft,
@@ -29,6 +35,11 @@ from app.agents.evidence_extraction import (
     EvidenceExtractionAgent,
     _ExtractedClaim,
     _ExtractionOutput,
+)
+from app.agents.report import (
+    ReportAgent,
+    _ReportOutput,
+    _SectionDraft,
 )
 from app.agents.research_planner import (
     ResearchPlannerAgent,
@@ -46,6 +57,7 @@ from app.agents.synthesis import (
     _SynthesisOutput,
 )
 from app.schemas.research_state import (
+    CaveatKind,
     CritiqueDecision,
     JobStatus,
     QualityIssueKind,
@@ -174,6 +186,28 @@ def _critic() -> EditorialCriticAgent:
     return EditorialCriticAgent(router)
 
 
+def _reporter() -> ReportAgent:
+    """Report agent: one section citing the first finding (F0)."""
+    output = _ReportOutput(
+        title="t", abstract="a", sections=[_SectionDraft(heading="h", narrative="n", findings=[0])]
+    )
+    router = ModelRouter(
+        providers={"fake": FakeProvider([output])},
+        policy={ModelRole.LONG_CONTEXT: ModelChoice("fake", "long-context-model")},
+    )
+    return ReportAgent(router)
+
+
+def _strategist() -> CreatorPacketAgent:
+    """Content strategist: one hook citing the first finding (F0)."""
+    output = _PacketOutput(hooks=[_HookDraft(text="hook", findings=[0])])
+    router = ModelRouter(
+        providers={"fake": FakeProvider([output])},
+        policy={ModelRole.LONG_CONTEXT: ModelChoice("fake", "long-context-model")},
+    )
+    return CreatorPacketAgent(router)
+
+
 def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> ResearchDeps:
     return ResearchDeps(
         planner=planner or _planner(),
@@ -183,6 +217,8 @@ def _deps(n_sources: int = 2, planner: ResearchPlannerAgent | None = None) -> Re
         verifier=_verifier(),
         synthesizer=_synthesizer(),
         critic=_critic(),
+        reporter=_reporter(),
+        strategist=_strategist(),
     )
 
 
@@ -277,6 +313,27 @@ def test_critique_node_populates_critique() -> None:
     assert c.decision is not None
 
 
+def test_report_node_populates_report() -> None:
+    # M11: the report node composes the reasoning output into a publishing report.
+    final = _run()
+    assert final.publishing.reports, "report node produced no report"
+    r = final.publishing.reports[0]
+    assert r.sections
+    assert r.published_via.startswith("report:")
+
+
+def test_packet_node_populates_creator_packet() -> None:
+    # M12: the packet node turns the report + findings into a creator packet,
+    # appended to publishing.packets and tied back to the report by report_id.
+    final = _run()
+    assert final.publishing.packets, "packet node produced no creator packet"
+    p = final.publishing.packets[0]
+    assert p.hooks
+    assert p.key_facts  # code-derived from the findings
+    assert p.report_id == final.publishing.reports[0].id
+    assert p.published_via.startswith("packet:")
+
+
 # --- M10b: the bounded revision loop (ADR 0012) -----------------------------
 
 
@@ -323,6 +380,8 @@ def _loop_deps(
                 policy={ModelRole.PLANNING: ModelChoice("fake", "planning-model")},
             )
         ),
+        reporter=_reporter(),
+        strategist=_strategist(),
     )
     return deps, synth_fake, critic_fake
 
@@ -377,6 +436,17 @@ def test_accept_first_pass_runs_synthesis_once() -> None:
     assert final.reasoning.critiques[-1].decision is CritiqueDecision.ACCEPT
 
 
+def test_exhausted_run_completes_with_report_and_banner() -> None:
+    # M10b exhausted → M11 still publishes a best-effort report carrying the
+    # unresolved-critique caveat; the run COMPLETES (does not FAIL).
+    deps, _, _ = _loop_deps([_synth_out("first"), _synth_out("second")], [_REVISE, _REVISE])
+    final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
+    assert final.status is JobStatus.COMPLETED
+    assert final.publishing.reports
+    report = final.publishing.reports[0]
+    assert any(c.kind is CaveatKind.UNRESOLVED_CRITIQUE for c in report.caveats)
+
+
 def test_mixed_source_types_only_web_ingested() -> None:
     # M6: discovery yields a WEB and a PDF source; v1 ingests only WEB, skips the
     # PDF, and the job still COMPLETES (no crash on the unsupported type).
@@ -403,6 +473,8 @@ def test_mixed_source_types_only_web_ingested() -> None:
         verifier=_verifier(),
         synthesizer=_synthesizer(),
         critic=_critic(),
+        reporter=_reporter(),
+        strategist=_strategist(),
     )
     final = asyncio.run(run_research(ResearchState(topic="t"), deps=deps))
     assert final.status is JobStatus.COMPLETED

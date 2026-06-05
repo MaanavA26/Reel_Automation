@@ -2,9 +2,9 @@
 
 This is the engine's first fetch of attacker-influenceable URLs (search-sourced),
 so the request is hardened: bounded timeout, capped response size, capped
-redirects, an HTML/text content-type allowlist, and **no credentials/cookies**.
+redirects, a content-type allowlist (HTML/text + PDF), and **no credentials/cookies**.
 Unit-tested offline via ``httpx.MockTransport``; a live smoke test is
-``@pytest.mark.integration``. See ADR 0008.
+``@pytest.mark.integration``. See ADR 0008 (HTML) and ADR 0014 (PDF).
 """
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ from app.services.ingestion.base import FetchedContent, FetchError
 
 _DEFAULT_UA = "ReelAutomationBot/0.1 (+research ingestion)"
 _MAX_BYTES = 5_000_000  # 5 MB cap
-_ALLOWED_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+# HTML/text for WEB sources; application/pdf for PDF sources (ADR 0014). The size
+# cap and no-credentials posture still apply to PDF fetches.
+_ALLOWED_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "application/pdf")
 
 
 class HttpxFetchProvider:
