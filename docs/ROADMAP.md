@@ -293,6 +293,15 @@
     operator's existing `hf_` key — model-is-the-voice (construction-time), cold-start 503 raised (not
     slept), `duration_ms` via a mockable `ffprobe -i pipe:0` seam. [ADR 0048](adrs/0048-huggingface-tts.md).
     [ADR 0022](adrs/0022-tts-adapter.md).
+  - ✅ **TTS (primary, local, zero-cost):** `KokoroTtsProvider` (`media/tts/kokoro.py`) — the Apache-2.0
+    [Kokoro-82M](https://hf.co/hexgrad/Kokoro-82M) model run **offline on CPU** via `kokoro-onnx` (no network,
+    no vendor, no per-call cost), the default narration backend. Pure/impure split (mirrors ffmpeg ADR 0023):
+    one impure `_create_waveform` seam (lazy-imported + cached `Kokoro`, `.create()` → `(samples, sample_rate)`)
+    + pure numpy-free WAV encode and **exact** samples/rate duration (no header, no `ffprobe`). Lazy-imported so
+    the module builds offline (fail-loud install hint); per-call `voice` wins; storage-neutral via the reused
+    `AudioSink` (→ `file://`); blocking inference off the event loop. Fully hermetic (waveform-seam mock, no
+    kokoro/onnx/numpy); live model path is a `@pytest.mark.integration` smoke gated on the package + model files.
+    Adapter only — no wiring/`config.py`/runtime-dep change. [ADR 0046](adrs/0046-kokoro-local-tts.md).
   - ✅ **TTS (OpenAI):** `OpenAiTtsProvider` (httpx, real `POST /audio/speech` → raw audio bytes) — the
     out-of-box adapter for any OpenAI-compatible backend, since real `/audio/speech` sends **no** duration
     header. Computes `duration_ms` from the rendered audio with `ffprobe` (the already-required `ffmpeg`
