@@ -1,0 +1,28 @@
+# Build context hygiene for backend/Dockerfile.
+# Keep the context to what the image needs: pyproject.toml + app/.
+
+# Secrets — must never enter a layer.
+.env
+.env.*
+!.env.example
+
+# Virtualenvs / local installs
+.venv/
+.venv311/
+*.egg-info/
+build/
+
+# Tests are not shipped in the runtime image.
+tests/
+
+# Caches & tooling artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VCS / editor / OS noise
+.git/
+.gitignore
+.DS_Store
