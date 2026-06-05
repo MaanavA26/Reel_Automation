@@ -29,6 +29,10 @@ from app.services.llm.base import StructuredT
 PROVIDER_NAME = "gemini"
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never lands in ``ResearchState.error`` / logs (info-leak guard, ADR 0043).
+_ERR_BODY_MAX = 500
+
 # Keys emitted by Pydantic's ``model_json_schema()`` that Gemini's
 # ``responseSchema`` (an OpenAPI 3.0 subset) rejects with a 400. Stripped by the
 # sanitizer below. ``$defs``/``$ref`` are handled separately (inlined).
@@ -134,7 +138,9 @@ class GeminiProvider:
             return str(data["candidates"][0]["content"]["parts"][0]["text"])
         except (KeyError, IndexError, TypeError) as exc:
             # Also covers a safety-blocked / empty-candidate response (no parts).
-            raise GeminiError(f"unexpected generateContent response shape: {data!r}") from exc
+            raise GeminiError(
+                f"unexpected generateContent response shape: {repr(data)[:_ERR_BODY_MAX]}"
+            ) from exc
 
 
 def _to_gemini_schema(schema: dict[str, Any], defs: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -43,6 +43,9 @@ _DEFAULT_BASE_URL = "https://api.pexels.com"
 # Pexels caps ``per_page`` at 80; the protocol's ``limit`` is caller-controlled,
 # so it must be clamped before it reaches the wire.
 _MAX_PER_PAGE = 80
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never leaks into logs / surfaced errors (info-leak guard, ADR 0043).
+_ERR_BODY_MAX = 500
 
 
 class VisualError(RuntimeError):
@@ -111,13 +114,13 @@ def _map_videos(data: Any, *, limit: int) -> list[VisualClip]:
     mistyped* payload is wrapped in `VisualError`.
     """
     if not isinstance(data, dict):
-        raise VisualError(f"unexpected stock response shape: {data!r}")
+        raise VisualError(f"unexpected stock response shape: {repr(data)[:_ERR_BODY_MAX]}")
 
     raw_videos = data.get("videos")
     if raw_videos is None:
         return []
     if not isinstance(raw_videos, list):
-        raise VisualError(f"unexpected stock 'videos' shape: {raw_videos!r}")
+        raise VisualError(f"unexpected stock 'videos' shape: {repr(raw_videos)[:_ERR_BODY_MAX]}")
 
     clips: list[VisualClip] = []
     for item in raw_videos:
