@@ -199,17 +199,27 @@ def test_round_trip_json() -> None:
 def test_json_shape_matches_committed_fixture() -> None:
     """Canary against accidental schema-shape changes.
 
-    Update the committed fixture deliberately when the schema legitimately
-    evolves; that update is itself a reviewable signal of a backward-compat
-    change.
+    Asserts in *both* directions so any field added to the schema is caught:
+
+    - parse direction: the fixture validates and equals the reference state;
+    - dump direction: the reference state serializes back to exactly the fixture.
+
+    The dump assertion is the one that bites on a *new* field — a field added to
+    the schema appears in the dump but not in the committed fixture, breaking the
+    equality and forcing a deliberate fixture update. That update is itself a
+    reviewable signal of a backward-compat change.
     """
     fixture = json.loads(FIXTURE_PATH.read_text())
 
     state = ResearchState.model_validate(fixture)
 
-    # Field equality against a programmatically-built reference state.
+    # Parse direction: field equality against a programmatically-built reference.
     reference = _build_minimal_populated_state()
     assert state == reference
+
+    # Dump direction: the reference serializes back to exactly the fixture. Dict
+    # compare is field-order-independent; datetime serialization is exercised too.
+    assert json.loads(reference.model_dump_json()) == fixture
 
 
 def _build_minimal_populated_state() -> ResearchState:
