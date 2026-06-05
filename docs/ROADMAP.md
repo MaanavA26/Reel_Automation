@@ -238,6 +238,30 @@
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
 
+## Publishing / Social-Ops Layer (CLAUDE.md §3.4 — fourth major component)
+> Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Uploads a finished
+> `RenderedVideo` (Media layer artifact) to short-form platforms. Introduced via
+> [ADR 0033](adrs/0033-publishing-layer.md) per §3.4.
+- ✅ **Layer scaffold + first adapter.** `backend/app/publishing/` mirroring the search/visuals
+  fabric: a `PublishingProvider` protocol + `PublishTarget`/`PublishResult` DTOs (strict, id-prefixed
+  `pub_`, required `published_via` provenance; `privacy_status` defaults to `private`) + hermetic
+  `FakePublishingProvider`, all in `base.py`. The provider — never an LLM — mints the platform post
+  id/url (the §11 evidence boundary, publishing-side).
+- ✅ **YouTube Shorts publisher.** Real httpx `YouTubeShortsPublisher` over the YouTube Data API v3
+  **resumable upload** (initiate `POST …?uploadType=resumable&part=snippet,status` → read `Location`
+  session header → `PUT` raw bytes → map `id` to a `watch?v=` url); `#Shorts` appended to the
+  description. Storage-neutral via an injected `VideoSource` (read-side mirror of the TTS `AudioSink`).
+  Hardened like Brave/TTS (ADR 0021/0022): OAuth token at construction (no `Settings`/`config.py`
+  touch, no leak), bounded timeout, injectable client; operational failures propagate as `httpx`
+  errors, only a malformed shape wraps in `PublishError`. `MockTransport`-tested offline; a
+  side-effecting `@pytest.mark.integration` smoke test uploads a real `private` video, gated on
+  `REEL_YOUTUBE_ACCESS_TOKEN` + `REEL_YOUTUBE_TEST_VIDEO`. [ADR 0033](adrs/0033-publishing-layer.md).
+- ✅ **TikTok / Instagram Reels skeletons.** Protocol-conformant placeholders that raise
+  `PublishError("adapter pending")` — document the intended §3.4 platform coverage; concrete
+  create-container → publish adapters are drop-in follow-ups behind the protocol.
+- ⬜ **OAuth token refresh, composition-root wiring (+ `Settings` keys), chunked upload, TikTok/IG
+  concrete adapters.** Documented deferrals (ADR 0033) — added on demand, the wiring-free shape the
+  search/visuals adapters shipped in.
 ## Automation / Orchestration fabric (CLAUDE.md §3.4 — future layer)
 > Deterministic *tools* (CLAUDE.md §4 — scheduling/batch execution, never agents).
 > Introduced via [ADR 0034](adrs/0034-scheduler.md) per §3.4/§16.
