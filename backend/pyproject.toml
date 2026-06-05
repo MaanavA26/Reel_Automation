@@ -20,6 +20,11 @@ dev = [
     "pytest>=8.0,<9.0",
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<2.0",
+    # Property-based tests for the schema layer (network-gated; PyPI unreachable
+    # in the sandbox). `tests/schemas/test_research_state_properties.py`
+    # `importorskip`s it, so the suite stays green offline; the properties run
+    # wherever it is installed (CI, local dev with extras).
+    "hypothesis>=6.0,<7.0",
 ]
 # YouTube transcript ingestion (network-gated; PyPI unreachable in the sandbox).
 # Lazy-imported in `youtube_transcript_provider.py` so the package imports clean

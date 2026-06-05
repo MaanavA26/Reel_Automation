@@ -25,6 +25,13 @@
   model selection (`services/llm/`): `ModelProvider` protocol, `ModelRouter`/`RolePolicy`,
   config-sourced `default_policy`, hermetic `FakeProvider`. Concrete Anthropic adapter
   deferred to M3 (its first consumer). [ADR 0003](adrs/0003-model-router-llm-fabric.md).
+  - ✅ **Response cache (fabric enhancement):** `CachingModelProvider` (`services/llm/cache.py`) —
+    a decorator (composition) wrapping any `ModelProvider`, memoizing `complete_structured` by a
+    stable SHA-256 over `(model, system, prompt, schema-identity)`. Pluggable `CacheBackend`
+    protocol + stdlib in-memory default (optional `max_size` LRU); hit skips the wrapped call,
+    miss populates; exceptions never cached; values deep-copied for isolation. Opt-in (trades
+    freshness for cost on non-deterministic models); stdlib-only, no router/config change.
+    Hermetic over `FakeProvider`. [ADR 0026](adrs/0026-llm-response-cache.md).
 
 ## Research Control band
 - ✅ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node:
@@ -106,8 +113,11 @@
   the **full** findings set (so an uncited disputed finding still surfaces) and the
   `UNRESOLVED_CRITIQUE` banner fires when the revision loop exhausted unsatisfied (fulfilling
   ADR 0012's promise). New `ResearchPublishingState`; dedicated `report` node
-  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Markdown rendering +
-  creator-packet fields deferred to M12. [ADR 0017](adrs/0017-report-generation.md).
+  (`…→critique→report→publish`); `publish` is now the lifecycle terminal. Creator-packet fields
+  deferred to M12. Deterministic `render_markdown` / `render_html` renderers
+  (`services/publishing/markdown.py`, `html.py`) now fulfil ADR 0017's deferred renderer — citations
+  and caveats always render (the §11 non-omittability carried to the output surface), HTML escapes
+  all text. [ADR 0017](adrs/0017-report-generation.md).
 - ✅ **M12 — Creator packet + downstream handoff artifacts.** Report + findings → a short-form
   `CreatorPacket` (`CreatorPacketAgent`, the Short-Form Content Strategist, `LONG_CONTEXT` role) —
   hook ideas, content angles, short narrative options (model creative prose) + **code-derived key
@@ -149,8 +159,34 @@
   + pure stdlib `format_srt`/`format_vtt`). Typed `extra='forbid'` artifact DTOs (`aud_`/`sub_`/`vid_`)
   carry a required `produced_via` provenance string (symmetric with `discovered_via`/`extracted_via`).
   Layer imports nothing from the Deep Research schema (standalone). [ADR 0019](adrs/0019-media-production-layer.md).
-- ⬜ **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
+- 🔨 **Concrete adapters.** Real `TTSProvider` (ElevenLabs/Azure), `CompositionService` (real ffmpeg),
   image/video generation-or-retrieval (Veo/stock) — behind the protocols, network/binary-gated.
+  - ✅ **Composition (ffmpeg).** `FfmpegCompositionService` (`backend/app/media/composition/ffmpeg.py`) —
+    first concrete `CompositionService`: assembles audio + `CaptionTrack` + visuals into a vertical MP4.
+    Pure `build_ffmpeg_args` (argv construction, fully unit-testable with no binary) split from a single
+    mockable `subprocess.run` execution seam; missing-binary/non-zero-exit → `CompositionError`
+    (`shlex.join`'d command + stderr tail). Duration mirrors narration; captions burned in via
+    `subtitles.format_srt`. Hermetic argv/error tests + `@pytest.mark.integration` real-render smoke
+    (lavfi inputs, skips without ffmpeg). No new dependency. [ADR 0023](adrs/0023-ffmpeg-composition.md).
+  - ⬜ **TTS / visuals.** Real `TTSProvider` (ElevenLabs/Azure) and image/video generation-or-retrieval
+    (Veo/stock) — still network-gated behind their protocols.
+  - ✅ **Visual / B-roll retrieval seam.** `backend/app/media/visuals/` — the retrieval half of the
+    §3.3 "image/video retrieval" responsibility ADR 0019 deferred (the `visual_uris` producer for
+    `CompositionService.render`). A `VisualProvider` protocol + a `VisualClip` DTO (`vis_`,
+    `extra='forbid'`, required `produced_via`; `kind`/`width`/`height`/optional `duration_ms`/`attribution`)
+    + a hermetic `FakeVisualProvider`, mirroring the search fabric (DTO beside its protocol in `base.py`).
+    Real httpx `StockVisualProvider` over Pexels `GET /videos/search` (Brave-style hardening: key at
+    construction, never leaked; injectable client; `per_page` clamp; `VisualError` only on bad shape).
+    The tool, never the LLM, mints the asset `uri`. Offline `MockTransport` tests +
+    `@pytest.mark.integration` live (`REEL_AUTOMATION_STOCK_API_KEY`). Adapter-only, no wiring/config
+    change. [ADR 0024](adrs/0024-visual-retrieval.md).
+- ⬜ **Concrete adapters.** Behind the ADR 0019 protocols, network/binary-gated.
+  - ✅ **TTS:** `HttpTtsProvider` (httpx, generic REST `POST /synthesize` → raw audio bytes) — one
+    adapter serves any compatible backend by config; bytes→`audio_uri` via an injected storage `sink`
+    (descriptor-not-bytes invariant); `duration_ms` from an `X-Audio-Duration-Ms` header (fail-loud on
+    absence); LLM-adapter hardening (`MockTransport`-tested, key-at-construction, integration smoke).
+    [ADR 0022](adrs/0022-tts-adapter.md).
+  - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
 
@@ -211,6 +247,12 @@
   to a Docker-enabled run / the `docker-build.yml` CI job.
 - ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
   target is chosen; current workflow is build-only to keep zero auth/secret surface.
+- ✅ **Structured logging + run-tracing scaffold.** Stdlib-only `JsonFormatter` (one JSON
+  object per log line: `ts`/`level`/`logger`/`message`/`run_id`) + a `contextvars`-based
+  `run_context(run_id)` so a Deep Research job's logs are correlatable across all nodes/agents
+  without changing existing `getLogger(__name__)` call sites. `setup_logging(level, json=...)`
+  configures the root logger idempotently; entrypoint wiring left as a one-line call.
+  [ADR 0030](adrs/0030-structured-logging.md).
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
