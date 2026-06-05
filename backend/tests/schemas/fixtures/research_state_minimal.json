@@ -4,6 +4,8 @@
   "status": "running",
   "created_at": "2026-01-01T00:00:00Z",
   "updated_at": "2026-01-01T00:00:00Z",
+  "error": null,
+  "revision_iteration": 0,
   "plan": {
     "id": "plan_fixed_001",
     "goal": "Understand the timeline of the thing.",
@@ -49,5 +51,16 @@
         "extracted_via": "extraction_v1"
       }
     ]
+  },
+  "reasoning": {
+    "verdicts": [],
+    "synthesis": {
+      "findings": []
+    },
+    "critiques": []
+  },
+  "publishing": {
+    "reports": [],
+    "packets": []
   }
 }
