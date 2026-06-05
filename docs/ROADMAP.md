@@ -25,6 +25,13 @@
   model selection (`services/llm/`): `ModelProvider` protocol, `ModelRouter`/`RolePolicy`,
   config-sourced `default_policy`, hermetic `FakeProvider`. Concrete Anthropic adapter
   deferred to M3 (its first consumer). [ADR 0003](adrs/0003-model-router-llm-fabric.md).
+  - ✅ **Response cache (fabric enhancement):** `CachingModelProvider` (`services/llm/cache.py`) —
+    a decorator (composition) wrapping any `ModelProvider`, memoizing `complete_structured` by a
+    stable SHA-256 over `(model, system, prompt, schema-identity)`. Pluggable `CacheBackend`
+    protocol + stdlib in-memory default (optional `max_size` LRU); hit skips the wrapped call,
+    miss populates; exceptions never cached; values deep-copied for isolation. Opt-in (trades
+    freshness for cost on non-deterministic models); stdlib-only, no router/config change.
+    Hermetic over `FakeProvider`. [ADR 0026](adrs/0026-llm-response-cache.md).
 
 ## Research Control band
 - ✅ **M3 — Research Planner agent.** topic → `ResearchPlan` of `SubQuestion`s. First real node:
