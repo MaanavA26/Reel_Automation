@@ -140,6 +140,13 @@
   `TestClient` suite drives the real workflow hermetically via `app.dependency_overrides`.
   [ADR 0016](adrs/0016-research-api-surface.md). **Deferred:** background/async execution, streaming
   progress, id-addressable `GET /research/{id}` + job store, frontend wiring.
+  - 🔨 **M13 (async slice):** async job store + status endpoints. `POST /api/v1/research/jobs`
+    enqueues + returns **202** with the `QUEUED` `ResearchState` id, runs `run_research` in a FastAPI
+    background task; `GET /api/v1/research/jobs/{id}` reads the snapshot (status + result) or 404s. A new
+    in-memory `JobStore` service (`backend/app/services/jobs/`) owns the lifecycle and stores the canonical
+    `ResearchState` (job id = `state.id`); held as a process-singleton on `app.state`. The sync `POST
+    /research` endpoint is kept. **Single-process, non-durable by design** — durable/cross-worker store,
+    streaming progress, and `CANCELLED` deferred. [ADR 0031](adrs/0031-async-job-store.md).
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
