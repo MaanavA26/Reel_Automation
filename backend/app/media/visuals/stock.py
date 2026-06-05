@@ -36,6 +36,7 @@ from typing import Any
 
 import httpx
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.media.visuals.base import VisualClip, VisualKind
 
 PROVIDER_NAME = "stock"
@@ -58,7 +59,7 @@ class VisualError(RuntimeError):
     """
 
 
-class StockVisualProvider:
+class StockVisualProvider(CloseOwnedClientMixin):
     """A `VisualProvider` over the Pexels Videos API.
 
     Hardened like the Brave adapter: a bounded timeout and a key that never leaks
@@ -81,6 +82,7 @@ class StockVisualProvider:
             raise VisualError("api_key is required (set REEL_AUTOMATION_STOCK_API_KEY)")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def search(self, *, query: str, limit: int = 10) -> list[VisualClip]:

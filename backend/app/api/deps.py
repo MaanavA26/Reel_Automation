@@ -17,15 +17,27 @@ from app.services.video import VideoJobStore, VideoPipeline, build_video_pipelin
 from app.workflows.deep_research import ResearchDeps
 
 
-def get_research_deps() -> ResearchDeps:
-    """Provide the workflow `ResearchDeps` bundle (request-time, overridable).
+def get_research_deps(request: Request) -> ResearchDeps:
+    """Provide the app-scoped `ResearchDeps` bundle (built once, overridable).
 
-    Delegates to the composition root so the construction logic lives in one
-    FastAPI-agnostic place. Construction is lazy (per call), so the app boots
-    even before a production search/model adapter is wired and tests can
-    override this provider before the first request.
+    The bundle and its httpx-owning providers are built **once per app** and
+    cached on ``request.app.state.research_deps`` — building per request leaked a
+    fresh ``httpx.AsyncClient`` per provider on every call (ADR 0044). The build
+    is **lazy** (on first use here, not in `create_app`): the composition root
+    raises `CompositionError` when no production model/search backend is wired, so
+    eager construction would crash startup and break the "boot then 503 per
+    request" contract. On the first successful build, the providers' closables are
+    appended to ``app.state.aclosables`` so the lifespan can close them on
+    shutdown. Tests override this provider via `app.dependency_overrides` before
+    the first request, so the composition root is never reached under test.
     """
-    return build_research_deps()
+    cached: ResearchDeps | None = getattr(request.app.state, "research_deps", None)
+    if cached is not None:
+        return cached
+    bundle = build_research_deps()
+    request.app.state.research_deps = bundle.deps
+    request.app.state.aclosables.extend(bundle.closables)
+    return bundle.deps
 
 
 def get_job_store(request: Request) -> JobStore:
@@ -42,16 +54,26 @@ def get_job_store(request: Request) -> JobStore:
     return store
 
 
-def get_video_pipeline() -> VideoPipeline:
-    """Provide the end-to-end `VideoPipeline` (request-time, overridable).
+def get_video_pipeline(request: Request) -> VideoPipeline:
+    """Provide the app-scoped end-to-end `VideoPipeline` (built once, overridable).
 
-    Mirrors `get_research_deps`: construction is lazy (per call) via the
-    composition root, so the app boots even before a live model/search/TTS
-    backend is configured, and tests override this provider with a fake-backed
-    pipeline before the first request. An unconfigured backend surfaces as a
-    `CompositionError` mapped to 503 at the seam.
+    Mirrors `get_research_deps`: the pipeline and its httpx-owning providers are
+    built **once per app** and cached on ``request.app.state.video_pipeline``
+    (building per request leaked a client per provider on every call; ADR 0044).
+    The build is **lazy** (on first use), so the app boots even before a live
+    model/search/TTS backend is configured and an unconfigured backend surfaces as
+    a `CompositionError` mapped to 503 at the seam — never a startup crash. The
+    providers' closables are appended to ``app.state.aclosables`` for shutdown.
+    Tests override this provider with a fake-backed pipeline before the first
+    request, so the composition root is never reached under test.
     """
-    return build_video_pipeline()
+    cached: VideoPipeline | None = getattr(request.app.state, "video_pipeline", None)
+    if cached is not None:
+        return cached
+    bundle = build_video_pipeline()
+    request.app.state.video_pipeline = bundle.pipeline
+    request.app.state.aclosables.extend(bundle.closables)
+    return bundle.pipeline
 
 
 def get_video_job_store(request: Request) -> VideoJobStore:

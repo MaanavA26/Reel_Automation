@@ -95,7 +95,9 @@ def test_router_registers_provider_under_config_name_so_policy_resolves() -> Non
     # policy keys roles by 'groq'. Registering under the config name is what makes
     # role resolution succeed (a registry-name policy against an adapter-name key
     # would raise UnknownProviderError).
-    router = _build_router(_settings(default_provider="groq", groq_api_key=SecretStr("gsk-test")))
+    router, _provider = _build_router(
+        _settings(default_provider="groq", groq_api_key=SecretStr("gsk-test"))
+    )
     bound = router.for_role(ModelRole.PLANNING)  # must not raise
     assert bound.provider_name == "openai-compatible"  # the adapter's own name
 
@@ -133,10 +135,15 @@ def test_unknown_search_provider_raises() -> None:
 
 
 def test_build_research_deps_assembles_full_bundle() -> None:
-    deps = build_research_deps(_settings())
+    bundle = build_research_deps(_settings())
+    deps = bundle.deps
     # Every collaborator is present (a smoke check the bundle is complete).
     assert deps.planner and deps.discovery and deps.ingestion
     assert deps.synthesizer and deps.reporter and deps.strategist
+    # The httpx-owning seams (model + search + fetch) are returned for shutdown
+    # close (ADR 0044): each exposes the AsyncClosable contract.
+    assert len(bundle.closables) == 3
+    assert all(hasattr(c, "aclose") for c in bundle.closables)
 
 
 def test_build_research_deps_unconfigured_model_raises() -> None:
@@ -158,23 +165,26 @@ def test_build_media_deps_requires_tts_key() -> None:
 
 
 def test_build_media_deps_builds_seams(tmp_path: object) -> None:
-    deps = build_media_deps(
+    bundle = build_media_deps(
         _settings(
             tts_base_url="https://tts.example.com",
             tts_api_key=SecretStr("tts-key"),
             media_output_dir=str(tmp_path),
         )
     )
+    deps = bundle.deps
     assert isinstance(deps, MediaDeps)
     assert deps.tts.name == "http"
     assert deps.composition.name == "ffmpeg"
     # No stock key configured -> no visual provider wired (live render would then
     # fail loud in ffmpeg, the honest behavior).
     assert deps.visuals is None
+    # Only the TTS provider owns a client to close (no stock key) (ADR 0044).
+    assert len(bundle.closables) == 1
 
 
 def test_build_media_deps_wires_stock_visuals_and_sink_when_key_set(tmp_path: object) -> None:
-    deps = build_media_deps(
+    bundle = build_media_deps(
         _settings(
             tts_base_url="https://tts.example.com",
             tts_api_key=SecretStr("tts-key"),
@@ -182,11 +192,14 @@ def test_build_media_deps_wires_stock_visuals_and_sink_when_key_set(tmp_path: ob
             media_output_dir=str(tmp_path),
         )
     )
+    deps = bundle.deps
     assert deps.visuals is not None
     assert deps.visuals.name == "stock"
     # The sink is wired alongside the provider so the live render can bridge the
     # provider's remote https uris to local file:// uris ffmpeg can resolve.
     assert deps.visual_sink is not None
+    # Both TTS and stock visuals own clients to close (ADR 0044).
+    assert len(bundle.closables) == 2
 
 
 def test_no_stock_key_wires_neither_visuals_nor_sink(tmp_path: object) -> None:
@@ -196,7 +209,7 @@ def test_no_stock_key_wires_neither_visuals_nor_sink(tmp_path: object) -> None:
             tts_api_key=SecretStr("tts-key"),
             media_output_dir=str(tmp_path),
         )
-    )
+    ).deps
     assert deps.visuals is None
     assert deps.visual_sink is None
 

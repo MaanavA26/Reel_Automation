@@ -33,10 +33,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import Settings, get_settings
+from app.core.lifecycle import AsyncClosable
 from app.media.pipeline import MediaPipeline, MediaPlan
 from app.schemas.research_state import (
     CreatorPacket,
@@ -249,24 +251,45 @@ class VideoPipeline:
         )
 
 
+@dataclass(frozen=True)
+class VideoPipelineBundle:
+    """A built `VideoPipeline` plus the httpx-owning providers to close on shutdown.
+
+    The end-to-end analogue of `ResearchBundle`/`MediaBundle` (ADR 0044): the
+    pipeline aggregates the research deps (model + search + fetch clients) and the
+    media deps (TTS, and stock visuals when configured), so its ``closables`` is
+    the union of both bands' closables. The app lifespan drains them on shutdown.
+    """
+
+    pipeline: VideoPipeline
+    closables: tuple[AsyncClosable, ...]
+
+
 def build_video_pipeline(
     settings: Settings | None = None,
     *,
     max_syntheses: int = DEFAULT_MAX_SYNTHESES,
-) -> VideoPipeline:
-    """Assemble a live `VideoPipeline` from settings (ADR 0032).
+) -> VideoPipelineBundle:
+    """Assemble a live `VideoPipeline` (+ its closables) from settings (ADR 0032).
 
     Builds both collaborator bundles via the composition root
     (`build_research_deps` + `build_media_deps`), so an unconfigured model /
     search / TTS backend surfaces as a loud `CompositionError` (mapped to 503 at
     the API seam). The live render additionally needs the ``ffmpeg`` binary and,
     for a real composition, a visual source (configured via ``stock_api_key``).
-    Tests bypass this entirely by constructing a `VideoPipeline` with fake-backed
-    `ResearchDeps`/`MediaDeps`.
+    The returned ``closables`` union both bands' httpx-owning seams so the app can
+    close their clients on shutdown (ADR 0044). Tests bypass this entirely by
+    constructing a `VideoPipeline` with fake-backed `ResearchDeps`/`MediaDeps`.
     """
     resolved = settings or get_settings()
-    return VideoPipeline(
-        build_research_deps(resolved),
-        build_media_deps(resolved),
+    research = build_research_deps(resolved)
+    media = build_media_deps(resolved)
+    pipeline = VideoPipeline(
+        research.deps,
+        media.deps,
         max_syntheses=max_syntheses,
+    )
+    return VideoPipelineBundle(
+        pipeline=pipeline,
+        closables=(*research.closables, *media.closables),
     )

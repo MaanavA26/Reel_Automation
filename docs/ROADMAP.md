@@ -289,6 +289,15 @@
     (descriptor-not-bytes invariant); `duration_ms` from an `X-Audio-Duration-Ms` header (fail-loud on
     absence); LLM-adapter hardening (`MockTransport`-tested, key-at-construction, integration smoke).
     [ADR 0022](adrs/0022-tts-adapter.md).
+  - ✅ **TTS (OpenAI):** `OpenAiTtsProvider` (httpx, real `POST /audio/speech` → raw audio bytes) — the
+    out-of-box adapter for any OpenAI-compatible backend, since real `/audio/speech` sends **no** duration
+    header. Computes `duration_ms` from the rendered audio with `ffprobe` (the already-required `ffmpeg`
+    binary's twin — no new dependency), via a pure `build_ffprobe_args`/`parse_ffprobe_duration_ms` split
+    from a single mockable `subprocess.run` seam (mirrors `ffmpeg.py`/ADR 0023; fail-loud on missing
+    binary/garbled output). Probes the **written file** through the injected storage `sink`, reusing the
+    composition adapter's `resolve_local_path`. Same LLM-adapter hardening + `MockTransport`/no-binary
+    hermetic tests + integration smoke. Adapter-only, no wiring/config change.
+    [ADR 0045](adrs/0045-openai-tts-adapter.md).
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.

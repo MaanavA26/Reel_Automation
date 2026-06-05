@@ -35,6 +35,7 @@ from typing import Any
 
 import httpx
 
+from app.core.lifecycle import CloseOwnedClientMixin
 from app.schemas.research_state import SourceType
 from app.services.search.base import SearchResult
 
@@ -59,7 +60,7 @@ class SearchError(RuntimeError):
     """
 
 
-class BraveSearchProvider:
+class BraveSearchProvider(CloseOwnedClientMixin):
     """A `SearchProvider` over the Brave Web Search API.
 
     Hardened like the M-LP.1 LLM adapter: a bounded timeout and a key that never
@@ -82,6 +83,7 @@ class BraveSearchProvider:
             raise SearchError("api_key is required (set REEL_AUTOMATION_BRAVE_API_KEY)")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def search(self, *, query: str, limit: int = 10) -> list[SearchResult]:
