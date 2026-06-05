@@ -13,15 +13,40 @@ through ``html.escape`` and the citation ``source_url`` goes through
 attribute, so a quote or angle bracket in a title, narrative, caveat detail, or
 url cannot break out of its element or attribute context.
 
+Escaping alone does **not** neutralize a dangerous url *scheme* — an
+``href="javascript:..."`` survives ``html.escape`` and still executes on click.
+So the citation ``source_url`` is additionally checked against a scheme
+allowlist (``http``/``https``/``mailto``); a non-allowlisted scheme renders the
+citation label as escaped text with no link at all (ADR 0043).
+
 This fulfills ADR 0017's deferred HTML renderer (the consumer has now arrived).
-See ADR 0017.
+See ADR 0017 and ADR 0043 (fetch/render hardening).
 """
 
 from __future__ import annotations
 
 from html import escape
+from urllib.parse import urlsplit
 
 from app.schemas.research_state import Caveat, Citation, Report, ReportSection
+
+# Only these url schemes may become a clickable ``href``. ``html.escape`` does
+# NOT neutralize a ``javascript:``/``data:`` scheme, so a non-allowlisted scheme
+# is rendered as escaped text with no link (ADR 0043). ``mailto`` is kept for
+# author/contact citations.
+_LINKABLE_SCHEMES = frozenset({"http", "https", "mailto"})
+
+
+def _is_linkable(url: str) -> bool:
+    """True if ``url``'s scheme is on the href allowlist (XSS guard).
+
+    Leading whitespace / control chars are stripped first so a
+    ``"\\tjavascript:..."`` style payload cannot smuggle a disallowed scheme
+    past the check. A scheme-relative or relative url (empty scheme) is treated
+    as non-linkable and rendered as plain escaped text.
+    """
+    cleaned = url.strip().lstrip("\t\r\n\x00")
+    return urlsplit(cleaned).scheme.lower() in _LINKABLE_SCHEMES
 
 
 def render_html(report: Report) -> str:
@@ -64,10 +89,15 @@ def _render_section(section: ReportSection) -> str:
 def _render_references(citations: list[Citation]) -> str:
     lines = ["<section>", "  <h2>References</h2>", "  <ol>"]
     for citation in citations:
-        href = escape(citation.source_url, quote=True)
         label = escape(citation.title or citation.source_url)
         source_type = escape(citation.source_type.value)
-        lines.append(f'    <li><a href="{href}">{label}</a> — {source_type}</li>')
+        if _is_linkable(citation.source_url):
+            href = escape(citation.source_url, quote=True)
+            entry = f'<a href="{href}">{label}</a>'
+        else:
+            # Non-allowlisted scheme (e.g. javascript:/data:) — no link, text only.
+            entry = label
+        lines.append(f"    <li>{entry} — {source_type}</li>")
     lines.extend(["  </ol>", "</section>"])
     return "\n".join(lines)
 

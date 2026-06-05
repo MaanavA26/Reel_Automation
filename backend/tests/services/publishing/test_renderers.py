@@ -160,6 +160,46 @@ def test_html_escapes_text_and_href() -> None:
     assert "&quot;quoted&quot;" in out
 
 
+# --- href scheme allowlist: dangerous schemes render without a link ----------
+
+
+def test_html_javascript_scheme_renders_without_link() -> None:
+    report = _report(citations=[_citation(url="javascript:alert(1)", title="Click me")])
+    out = render_html(report)
+    # The label still renders (escaped), but never inside an href / anchor.
+    assert "Click me" in out
+    assert "href" not in out
+    assert "<a " not in out
+    assert "javascript:" not in out
+
+
+def test_html_whitespace_prefixed_javascript_renders_without_link() -> None:
+    # A leading tab/newline must not smuggle a javascript: scheme past the check.
+    report = _report(citations=[_citation(url="\t\njavascript:alert(1)", title="X")])
+    out = render_html(report)
+    assert "href" not in out
+    assert "javascript:" not in out
+
+
+def test_html_data_scheme_renders_without_link() -> None:
+    report = _report(citations=[_citation(url="data:text/html,<script>1</script>", title="D")])
+    out = render_html(report)
+    assert "href" not in out
+    assert "<a " not in out
+
+
+def test_html_http_and_mailto_schemes_stay_linked() -> None:
+    report = _report(
+        citations=[
+            _citation(url="https://example.com/ok", title="Web"),
+            _citation(url="mailto:author@example.com", title="Author"),
+        ]
+    )
+    out = render_html(report)
+    assert 'href="https://example.com/ok"' in out
+    assert 'href="mailto:author@example.com"' in out
+
+
 # --- determinism --------------------------------------------------------------
 
 

@@ -27,6 +27,10 @@ from app.services.llm.base import StructuredT
 
 PROVIDER_NAME = "openai-compatible"
 
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never lands in ``ResearchState.error`` / logs (info-leak guard, ADR 0043).
+_ERR_BODY_MAX = 500
+
 
 class OpenAICompatError(RuntimeError):
     """Raised on transport failure or output that fails validation after repair."""
@@ -117,7 +121,7 @@ class OpenAICompatibleProvider:
             return str(data["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:
             raise OpenAICompatError(
-                f"unexpected chat-completions response shape: {data!r}"
+                f"unexpected chat-completions response shape: {repr(data)[:_ERR_BODY_MAX]}"
             ) from exc
 
 

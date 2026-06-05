@@ -43,6 +43,9 @@ _DEFAULT_BASE_URL = "https://api.search.brave.com"
 # Brave rejects ``count`` above 20 (HTTP 422); the protocol's ``limit`` is
 # caller-controlled, so it must be clamped before it reaches the wire.
 _MAX_COUNT = 20
+# Bound the upstream-body excerpt in error messages so a full provider response
+# never lands in ``ResearchState.error`` / logs (info-leak guard, ADR 0043).
+_ERR_BODY_MAX = 500
 
 
 class SearchError(RuntimeError):
@@ -109,19 +112,21 @@ def _map_results(data: Any, *, limit: int) -> list[SearchResult]:
     Only a *present but mistyped* payload is wrapped in `SearchError`.
     """
     if not isinstance(data, dict):
-        raise SearchError(f"unexpected Brave response shape: {data!r}")
+        raise SearchError(f"unexpected Brave response shape: {repr(data)[:_ERR_BODY_MAX]}")
 
     web = data.get("web")
     if web is None:
         return []
     if not isinstance(web, dict):
-        raise SearchError(f"unexpected Brave 'web' shape: {web!r}")
+        raise SearchError(f"unexpected Brave 'web' shape: {repr(web)[:_ERR_BODY_MAX]}")
 
     raw_results = web.get("results")
     if raw_results is None:
         return []
     if not isinstance(raw_results, list):
-        raise SearchError(f"unexpected Brave 'web.results' shape: {raw_results!r}")
+        raise SearchError(
+            f"unexpected Brave 'web.results' shape: {repr(raw_results)[:_ERR_BODY_MAX]}"
+        )
 
     results: list[SearchResult] = []
     for item in raw_results:
