@@ -238,6 +238,21 @@
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
 
+## Automation / Orchestration fabric (CLAUDE.md §3.4 — future layer)
+> Deterministic *tools* (CLAUDE.md §4 — scheduling/batch execution, never agents).
+> Introduced via [ADR 0034](adrs/0034-scheduler.md) per §3.4/§16.
+- ✅ **Scheduler primitives.** `backend/app/scheduler/` — the unattended N-videos/day loop's
+  three composable, hermetic pieces: `Schedule` (**pure** `next_run_after(reference)`, no clock/sleep
+  — `IntervalSchedule` anchored slots + `DailySchedule` UTC times-of-day; strictly-after semantics,
+  naive-datetime rejection), `TopicQueue` (FIFO + priority backlog over `heapq` with a load-bearing
+  `(priority, seq, topic)` key), and `BatchRunner` (runs an **injected** `Produce` coroutine across a
+  batch under an `asyncio.Semaphore`, per-topic error isolation, submission-order `BatchResult`).
+  Decoupled from the real `VideoPipeline` via the injected callable. Stdlib only (no apscheduler/celery).
+  [ADR 0034](adrs/0034-scheduler.md).
+- 🔨 **Driver loop + real wiring (deferred).** The long-lived `while: sleep until next_run; drain;
+  run_batch` process (the only piece touching a real clock/sleep) and the binding of `Produce` to the
+  real `VideoPipeline` + publishing step — the follow-up that makes the loop runnable end-to-end.
+
 ## Live providers (network-gated)
 - 🔨 **M-LP — Concrete provider adapters.**
   - ✅ **M-LP.1 (LLM):** `OpenAICompatibleProvider` (httpx, OpenAI `/chat/completions`) —
