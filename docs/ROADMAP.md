@@ -122,6 +122,14 @@
   field. A thin/heavily-warned packet is valid, not a failure. [ADR 0018](adrs/0018-creator-packet.md).
 
 ## Surface
+- 🔨 **M13 — API + job submission + frontend wiring (sync submit done).** `POST /api/v1/research`:
+  thin router awaits `run_research` and returns the canonical terminal `ResearchState` (the response
+  *is* the result, so it covers submit + read result/status in one). Composition root
+  (`build_research_deps`, FastAPI-agnostic) assembles `ResearchDeps` from `Settings`, failing loud
+  (`CompositionError → 503`) on still-missing collaborators (search → M-LP.2). Fake-backed
+  `TestClient` suite drives the real workflow hermetically via `app.dependency_overrides`.
+  [ADR 0016](adrs/0016-research-api-surface.md). **Deferred:** background/async execution, streaming
+  progress, id-addressable `GET /research/{id}` + job store, frontend wiring.
 - 🔨 **M13 — API + job submission + frontend wiring.** Submit job, stream progress, render artifacts.
   - 🔨 **M13 (frontend):** Deep Research submission + results UI (`frontend/src/pages/ResearchPage.tsx`,
     `components/research/`, `types/research.ts`, `services/research.ts`). Typed `submitResearch` service
