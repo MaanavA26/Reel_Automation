@@ -39,6 +39,7 @@ def test_research_state_defaults() -> None:
     assert state.topic == "Quantum supremacy"
     assert state.status == JobStatus.QUEUED
     assert state.id.startswith("job_")
+    assert state.revision_iteration == 0
     assert isinstance(state.plan, ResearchPlan)
     assert state.plan.sub_questions == []
     assert isinstance(state.acquisition, KnowledgeAcquisitionState)

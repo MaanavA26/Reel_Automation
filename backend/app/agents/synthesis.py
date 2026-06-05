@@ -40,6 +40,7 @@ from typing import TypeVar
 from pydantic import BaseModel, Field
 
 from app.schemas.research_state import (
+    Critique,
     Finding,
     ResearchPlan,
     SupportLevel,
@@ -114,8 +115,21 @@ class SynthesisAgent:
     def __init__(self, router: ModelRouter) -> None:
         self._router = router
 
-    async def synthesize(self, plan: ResearchPlan, verdicts: list[Verdict]) -> Synthesis:
+    async def synthesize(
+        self,
+        plan: ResearchPlan,
+        verdicts: list[Verdict],
+        *,
+        prior_critique: Critique | None = None,
+    ) -> Synthesis:
         """Synthesize ``verdicts`` into a `Synthesis` of `Finding`s.
+
+        On a revision pass (M10b) ``prior_critique`` carries the Editorial
+        Critic's last assessment; its rationale + issue details are injected into
+        the prompt so re-synthesis *addresses* the critique rather than re-running
+        the same inputs (without this feed-forward the revision loop would be
+        theater). ``None`` (the default, and every first pass) reproduces the M9
+        behavior exactly — backward-compatible.
 
         Raises `SynthesisError` if ``verdicts`` is empty (never advance on empty
         — verify already raises on zero verdicts upstream, so this is a defensive
@@ -130,7 +144,7 @@ class SynthesisAgent:
 
         output = await model.complete_structured(
             system=SYSTEM_PROMPT,
-            prompt=self._build_prompt(plan, verdicts),
+            prompt=self._build_prompt(plan, verdicts, prior_critique),
             schema=_SynthesisOutput,
         )
 
@@ -198,16 +212,28 @@ class SynthesisAgent:
         return resolved
 
     @staticmethod
-    def _build_prompt(plan: ResearchPlan, verdicts: list[Verdict]) -> str:
+    def _build_prompt(
+        plan: ResearchPlan, verdicts: list[Verdict], prior_critique: Critique | None = None
+    ) -> str:
         goal = plan.goal or "(no refined goal provided)"
         sub_qs = "\n".join(f"[S{i}] {sq.text}" for i, sq in enumerate(plan.sub_questions))
         verdict_lines = "\n".join(
             f"[V{i}] ({v.support_level.value}, confidence {v.confidence:.2f}) {v.claim}"
             for i, v in enumerate(verdicts)
         )
+        critique_block = ""
+        if prior_critique is not None:
+            issue_lines = "\n".join(
+                f"- {issue.kind.value}: {issue.detail}" for issue in prior_critique.issues
+            )
+            critique_block = (
+                "\n\nA prior synthesis was reviewed and needs revision. Address this "
+                f"editorial critique:\n{prior_critique.rationale}\n{issue_lines}\n"
+            )
         return (
             f"Research goal:\n{goal}\n\n"
             f"Sub-questions:\n{sub_qs or '(none)'}\n\n"
-            f"Cross-checked verdicts:\n{verdict_lines}\n\n"
+            f"Cross-checked verdicts:\n{verdict_lines}"
+            f"{critique_block}\n\n"
             "Synthesize findings that answer the sub-questions, grounded in the verdicts."
         )
