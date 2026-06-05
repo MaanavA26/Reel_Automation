@@ -278,7 +278,10 @@
     adapter serves any compatible backend by config; bytes→`audio_uri` via an injected storage `sink`
     (descriptor-not-bytes invariant); `duration_ms` from an `X-Audio-Duration-Ms` header (fail-loud on
     absence); LLM-adapter hardening (`MockTransport`-tested, key-at-construction, integration smoke).
-    [ADR 0022](adrs/0022-tts-adapter.md).
+    [ADR 0022](adrs/0022-tts-adapter.md). A sibling `HuggingFaceTtsProvider` (httpx, HF serverless
+    Inference API `POST /models/{model}`, `{"inputs": text}` → raw audio) runs narration off the
+    operator's existing `hf_` key — model-is-the-voice (construction-time), cold-start 503 raised (not
+    slept), `duration_ms` via a mockable `ffprobe -i pipe:0` seam. [ADR 0048](adrs/0048-huggingface-tts.md).
   - ⬜ **Composition** (real ffmpeg) and **image/video generation-or-retrieval** (Veo/stock).
 - ⬜ **Creator-packet → media handoff contract.** Maps the Deep Research creator packet (M12) to media
   inputs; earns its own ADR once M12's packet shape is fixed.
