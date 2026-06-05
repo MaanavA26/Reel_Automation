@@ -62,7 +62,16 @@
   the checkpointer milestone. [ADR 0009](adrs/0009-evidence-extraction.md).
 
 ## Knowledge Reasoning band
-- ⬜ **M8 — Cross-Verification agent.** Corroborate claims across sources; contradiction/weak-support detection.
+- ✅ **M8 — Cross-Verification agent.** Evidence → `Verdict`s (`CrossVerificationAgent`,
+  `PLANNING` role). A deterministic stdlib **claim-blocking tool** (`services/reasoning/`)
+  groups related claims into clusters (bounding the O(N²) cross-product); the agent judges each
+  cluster. §11 made structural twice: the model references evidence only by local index
+  (code resolves+validates ids), and `CORROBORATED` requires ≥2 **distinct sources** —
+  code-counted, never model-trusted (intra-source repetition is downgraded). New
+  `KnowledgeReasoningState` substate; `verify` node replaces the `reason` stub
+  (`plan→acquire→ingest→extract→verify→publish`). Thin support is a valid result (not a
+  failure); fan-out reducer/concurrency deferred to the checkpointer milestone.
+  [ADR 0010](adrs/0010-cross-verification.md).
 - ⬜ **M9 — Synthesis agent.** Evidence map → structured synthesis.
 - ⬜ **M10 — Editorial Critic + revision loop.** Gap analysis, quality judgment, bounded revision cycles.
 

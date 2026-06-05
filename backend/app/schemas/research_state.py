@@ -106,6 +106,67 @@ class KnowledgeAcquisitionState(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
 
 
+class SupportLevel(StrEnum):
+    """How a claim is supported once cross-checked across sources (M8).
+
+    A purely *structural* axis: how many distinct sources back the claim and
+    whether they conflict. Claim *strength* (thin vs strong support) is carried
+    separately by `Verdict.confidence`, so the two orthogonal dimensions never
+    collapse into one lossy label. ``CORROBORATED`` is defined as **two or more
+    distinct sources** agreeing — that distinct-source count is code-derived,
+    never model-counted (see ADR 0010 / `CrossVerificationAgent`).
+    """
+
+    CORROBORATED = "corroborated"  # >=2 distinct sources agree
+    SINGLE_SOURCE = "single_source"  # supported, but by one source only
+    CONTRADICTED = "contradicted"  # sources conflict
+
+
+class Verdict(BaseModel):
+    """A cross-checked claim — the Knowledge Reasoning band's unit of *inference*.
+
+    Distinct in kind from `Evidence`: an `Evidence` is a source-grounded *fact*
+    (what a chunk says); a `Verdict` is a *judgment about* a group of evidence
+    (whether sources agree). The two live in different substates so downstream
+    bands can never conflate inference with primary fact (CLAUDE.md §11).
+
+    A `Verdict` references its evidence **by id** into
+    `KnowledgeAcquisitionState.evidence` — it does not re-snapshot
+    ``chunk_text``/``source_url`` (the inverse of `Evidence`'s attached pattern,
+    correct because `Evidence` is already self-documenting; ADR 0001 anticipated
+    reasoning-band by-id cross-references). The model authors only ``claim`` /
+    ``support_level`` / ``confidence``; every id and the provenance are
+    code-attached and code-validated against the real evidence set (§11 made
+    structural). See ADR 0010.
+    """
+
+    model_config = _STRICT
+
+    id: str = Field(default_factory=lambda: _gen_id("vd"))
+    claim: str  # canonical/merged claim across the corroborating evidence
+    support_level: SupportLevel
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    contradicting_evidence_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    verified_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    verified_via: str
+
+
+class KnowledgeReasoningState(BaseModel):
+    """State produced by the Knowledge Reasoning band of Deep Research.
+
+    v1 (M8 Cross-Verification) carries only cross-checked `Verdict`s. Synthesis,
+    gap analysis, and revision artifacts (M9-M10) slot in here as additional
+    fields in their owning milestones — same empty-substate convention as the
+    other bands (ADR 0001): an empty ``verdicts`` list reads as "reasoning has
+    not run," not "reasoning produced nothing."
+    """
+
+    model_config = _STRICT
+
+    verdicts: list[Verdict] = Field(default_factory=list)
+
+
 class SubQuestion(BaseModel):
     """A decomposed question within a research plan.
 
@@ -174,9 +235,12 @@ class ResearchState(BaseModel):
     # M5/M7 fan-out reducer decision (same class as ADR 0002 §6).
     error: str | None = None
 
-    # Workflow order: plan first, then acquisition. Future band substates
-    # (reasoning, publishing) slot in after acquisition in subsequent PRs.
+    # Workflow order: plan -> acquisition -> reasoning. The publishing substate
+    # slots in after reasoning in a subsequent PR (M11-M12).
     plan: ResearchPlan = Field(default_factory=ResearchPlan)
     acquisition: KnowledgeAcquisitionState = Field(
         default_factory=KnowledgeAcquisitionState,
+    )
+    reasoning: KnowledgeReasoningState = Field(
+        default_factory=KnowledgeReasoningState,
     )
