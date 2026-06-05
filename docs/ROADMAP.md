@@ -208,6 +208,11 @@
       a second concrete provider for failover/robustness, `web.results[]` → `SearchResult`, `count`
       clamped to 20, offline-tested via `MockTransport` + a `@pytest.mark.integration` smoke test.
       [ADR 0021](adrs/0021-brave-search-adapter.md).
+  - ✅ **Provider registry:** `app/services/llm/providers.py` — a `name → ProviderPreset`
+    registry (`groq`, `nvidia`, `huggingface`, local `ollama`) + `build_provider(name, settings)`.
+    Operator selects a known backend by name (registry owns the `base_url`) and supplies only the
+    key, so several providers' keys coexist in one `.env`. Builds the M-LP.1 adapter; additive
+    alongside `factory.py`, no routing/wiring change. [ADR 0028](adrs/0028-provider-registry.md).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
   - 🔨 **M-LP.4 (YouTube ingestion):** `TranscriptProvider` seam + `FakeTranscriptProvider`
