@@ -245,22 +245,29 @@ class FfmpegCompositionService:
         output_path = self._output_dir / f"{output_id}.mp4"
 
         # The caption track is structured cues; ffmpeg's subtitles filter needs a
-        # file, so render it to a temp .srt next to the output. format_srt is the
-        # in-layer reuse (no reimplementation of timestamp formatting).
+        # file, so render it to a transient .srt next to the output and feed that
+        # path to ffmpeg. format_srt is the in-layer reuse (no reimplementation of
+        # timestamp formatting). The .srt is purely an implementation detail of the
+        # render, not a published artifact, so it is removed in the `finally` below:
+        # a successful render leaves only the .mp4, and a failed one cleans up its
+        # temp rather than littering `output_dir`.
         subtitles_path = self._output_dir / f"{output_id}.srt"
-        subtitles_path.write_text(format_srt(captions), encoding="utf-8")
+        try:
+            subtitles_path.write_text(format_srt(captions), encoding="utf-8")
 
-        args = build_ffmpeg_args(
-            audio_path=audio_path,
-            visual_paths=visual_paths,
-            subtitles_path=subtitles_path,
-            output_path=output_path,
-            duration_ms=audio.duration_ms,
-            width=width,
-            height=height,
-        )
+            args = build_ffmpeg_args(
+                audio_path=audio_path,
+                visual_paths=visual_paths,
+                subtitles_path=subtitles_path,
+                output_path=output_path,
+                duration_ms=audio.duration_ms,
+                width=width,
+                height=height,
+            )
 
-        await asyncio.to_thread(self._run, args)
+            await asyncio.to_thread(self._run, args)
+        finally:
+            subtitles_path.unlink(missing_ok=True)
 
         return RenderedVideo(
             id=output_id,
