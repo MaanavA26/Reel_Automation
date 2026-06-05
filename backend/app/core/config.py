@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.5-flash"
 
+    # Provider-registry keys (ADR 0028): per-backend API keys for the named
+    # OpenAI-compatible presets in app.services.llm.providers. Each preset owns
+    # its base_url; the operator supplies only the key here (and the per-role
+    # model ids above) so switching backend is a name change, not a URL edit.
+    # All SecretStr so they never leak into logs or reprs; empty by default —
+    # set the one(s) you use via .env / env vars. Local Ollama needs no key.
+    groq_api_key: SecretStr = SecretStr("")
+    nvidia_api_key: SecretStr = SecretStr("")
+    huggingface_api_key: SecretStr = SecretStr("")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
