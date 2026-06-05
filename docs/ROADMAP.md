@@ -147,6 +147,13 @@
     from the API, findings rendered with honest `disputed`/`weakest_support` flags (§11). Ships a sample
     fixture so the surface renders before the submit route lands. Backend route + streaming deferred to
     the M13 (backend) PR.
+    - 🔨 **M13 (frontend) — report + creator packet rendering.** Extends the results UI with the band-D
+      publishing artifacts: `ReportView` (title/abstract/sections + a code-resolved References list from
+      citations) with a **non-omittable** `CaveatsPanel` (always shown when caveats are present, §11),
+      and `CreatorPacketView` (hooks/angles/narratives + code-derived key facts) with the
+      unsafe-claim **warnings** flagged prominently and cross-linked to creative elements by shared
+      `finding_ids`. Adds `Report`/`Citation`/`Caveat`/`CreatorPacket` (+ siblings) TS types and the
+      `publishing` substate; fixture extended. `npm run build` not runnable in the offline sandbox.
 
 ## Media Production Layer (CLAUDE.md §3.3 — second major component)
 > Provider-neutral, deterministic **tools** (CLAUDE.md §4 — never agents). Introduced

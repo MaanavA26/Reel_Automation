@@ -52,7 +52,8 @@ export function ResearchPage(): ReactElement {
     <section className="research-page">
       <p className="research-page__lead">
         Submit a topic to run the Deep Research pipeline and review its plan,
-        sources, findings, and editorial critique.
+        sources, findings, editorial critique, published report, and creator
+        packet.
       </p>
 
       <form className="research-form" onSubmit={handleSubmit}>
