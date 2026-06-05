@@ -124,6 +124,18 @@
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
 
+## Ops / Infrastructure
+- ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
+  `app.main:app`, `/api/v1/health` HEALTHCHECK) + `frontend/Dockerfile` (node build → nginx
+  static serve, SPA fallback) + root `docker-compose.yml` (backend + frontend, `depends_on`
+  health, `env_file: backend/.env`) + per-context `.dockerignore` + a build-only
+  `.github/workflows/docker-build.yml` (PR/push to `main`, no registry push). No app-code or
+  `ci.yml` changes. **Run locally:** `cp backend/.env.example backend/.env && docker compose up
+  --build` → backend `http://localhost:8000`, frontend `http://localhost:8080`. Images were
+  authored offline (no Docker daemon in the sandbox); the first real `docker build` is deferred
+  to a Docker-enabled run / the `docker-build.yml` CI job.
+- ⬜ **Registry publish (deferred).** Push tagged images to GHCR on release once the deploy
+  target is chosen; current workflow is build-only to keep zero auth/secret surface.
 ## Showcase
 - 📄 **Deep Research engineering write-up** — `docs/showcase/deep-research-architecture.md`:
   the four bands, the full node pipeline, an accurate LangGraph Mermaid (revision cycle +
