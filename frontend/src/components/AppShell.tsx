@@ -2,13 +2,21 @@ import { useState, type ReactElement } from "react";
 
 import { HomePage } from "../pages/HomePage";
 import { ResearchPage } from "../pages/ResearchPage";
+import { StudioPage } from "../pages/StudioPage";
 
-type View = "home" | "research";
+type View = "home" | "research" | "studio";
 
 const NAV_ITEMS: ReadonlyArray<{ id: View; label: string }> = [
   { id: "home", label: "Overview" },
   { id: "research", label: "Deep Research" },
+  { id: "studio", label: "Studio" },
 ];
+
+const VIEWS: Record<View, () => ReactElement> = {
+  home: HomePage,
+  research: ResearchPage,
+  studio: StudioPage,
+};
 
 export function AppShell(): ReactElement {
   const [view, setView] = useState<View>("home");
@@ -35,7 +43,10 @@ export function AppShell(): ReactElement {
           ))}
         </nav>
         <div className="app-shell__body">
-          {view === "home" ? <HomePage /> : <ResearchPage />}
+          {(() => {
+            const ActiveView = VIEWS[view];
+            return <ActiveView />;
+          })()}
         </div>
       </main>
     </div>
