@@ -456,6 +456,201 @@ body {
   color: #8b5a0c;
 }
 
+/* --- Report (M11 publishing surface) --- */
+.report-view__title {
+  margin: 0 0 10px;
+  font-size: 1.2rem;
+}
+
+.report-view__abstract {
+  margin: 0 0 18px;
+  color: #3a4a60;
+}
+
+.report-section-block + .report-section-block {
+  margin-top: 16px;
+}
+
+.report-section-block__heading {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.report-section-block__narrative {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #3a4a60;
+}
+
+.report-view__references {
+  margin-top: 22px;
+}
+
+.report-view__references-title {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7787;
+}
+
+.reference-list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.reference-list__item {
+  margin-bottom: 8px;
+}
+
+.reference-list__item .source-type {
+  margin-right: 8px;
+}
+
+/* --- Caveats panel (CLAUDE.md §11 non-omittable limitations) --- */
+.caveats-panel {
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid rgba(176, 42, 42, 0.35);
+  border-radius: 14px;
+  background-color: rgba(176, 42, 42, 0.05);
+}
+
+.caveats-panel .research-section__title {
+  color: #8a2020;
+}
+
+.caveat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.caveat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.caveat-card + .caveat-card {
+  margin-top: 12px;
+}
+
+.caveat-card__kind {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #8a2020;
+}
+
+.caveat-card__detail {
+  font-size: 0.92rem;
+  color: #3a4a60;
+}
+
+/* --- Creator packet (M12) --- */
+.creator-warnings {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid rgba(176, 42, 42, 0.4);
+  border-radius: 14px;
+  background-color: rgba(176, 42, 42, 0.06);
+}
+
+.creator-warnings__title {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a2020;
+}
+
+.creator-warning-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.creator-warning-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.creator-warning-card + .creator-warning-card {
+  margin-top: 12px;
+}
+
+.creator-warning-card__kind {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #8a2020;
+}
+
+.creator-warning-card__detail {
+  font-size: 0.92rem;
+  color: #3a4a60;
+}
+
+.packet-block {
+  margin-top: 18px;
+}
+
+.packet-block__title {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7787;
+}
+
+.packet-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.packet-item {
+  border: 1px solid rgba(19, 34, 56, 0.1);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.packet-item + .packet-item {
+  margin-top: 10px;
+}
+
+.packet-item__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.packet-item__text {
+  margin: 0;
+  font-weight: 600;
+}
+
+.packet-item__detail {
+  margin: 6px 0 0;
+  font-size: 0.9rem;
+  color: #6b7787;
+}
+
+.packet-flag {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8a2020;
+}
+
 @media (max-width: 640px) {
   .app-shell {
     padding: 20px 12px;
