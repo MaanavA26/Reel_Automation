@@ -378,6 +378,20 @@
     node-level `RetryPolicy` (provider-level composes *under* the node); the "when to give up" judgment
     stays with the Orchestrator. [ADR 0027](adrs/0027-llm-resilience.md).
 
+## Style / brand memory (CLAUDE.md §3.4 — future layer)
+- ✅ **Channel / brand profiles.** `backend/app/channels/` — per-channel config so the operator
+  runs several faceless channels on-brand: a strict, `chan_`-prefixed `ChannelProfile` (niche +
+  `topic_seeds`, non-empty `platforms`, `tts_voice_id`, `tone`/`persona`, `posting_cadence`,
+  `banned_topics`, `Branding`) read by topic-sourcing/scripting/TTS/SEO, plus a `ChannelStore`
+  **`Protocol`** seam (`TTSProvider`/`SearchProvider` idiom) with an async, in-memory
+  `InMemoryChannelStore` (CRUD, one `asyncio.Lock`, store-owned `updated_at` bump like `JobStore`)
+  and a pre-seedable, call-recording `FakeChannelStore`. Deterministic config/tool, not an agent
+  (CLAUDE.md §4). [ADR 0042](adrs/0042-channel-profiles.md).
+- ⬜ **Durable channel store (deferred).** A `Protocol`-implementing `SqlChannelStore` (or similar)
+  for cross-worker/persistent profiles; drops in without touching consumers.
+- ⬜ **Channels API / CLI + pipeline wiring (deferred).** Expose CRUD over HTTP/CLI and let the
+  research/media steps read the active channel's profile; needs a consumer first.
+
 ## Ops / Infrastructure
 - ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
   `app.main:app`, `/api/v1/health` HEALTHCHECK) + `frontend/Dockerfile` (node build → nginx
