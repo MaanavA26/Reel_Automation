@@ -1,5 +1,9 @@
 # Reel Automation
 
+[![CI](https://github.com/MaanavA26/Reel_Automation/actions/workflows/ci.yml/badge.svg)](https://github.com/MaanavA26/Reel_Automation/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+
 Production-grade scaffold for a modular system that supports research, content generation, media production, and publishing workflows for short-form video automation.
 
 ## Repository Layout
