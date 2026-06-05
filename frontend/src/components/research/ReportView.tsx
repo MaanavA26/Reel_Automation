@@ -36,6 +36,11 @@ export function ReportView({ report }: ReportViewProps): ReactElement {
         </div>
       ) : null}
 
+      {/* Caveats sit above the bibliography so the report's code-derived
+          limitations are never read as a footnote below the references
+          (CLAUDE.md §11 non-burial). */}
+      <CaveatsPanel caveats={report.caveats} />
+
       {report.citations.length > 0 ? (
         <div className="report-view__references">
           <h4 className="report-view__references-title">
@@ -59,8 +64,6 @@ export function ReportView({ report }: ReportViewProps): ReactElement {
           </ol>
         </div>
       ) : null}
-
-      <CaveatsPanel caveats={report.caveats} />
     </section>
   );
 }
