@@ -21,6 +21,12 @@ dev = [
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<2.0",
 ]
+# YouTube transcript ingestion (network-gated; PyPI unreachable in the sandbox).
+# Lazy-imported in `youtube_transcript_provider.py` so the package imports clean
+# without this extra installed. See ADR 0015.
+youtube = [
+    "youtube-transcript-api>=1.0,<2.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -59,6 +65,11 @@ disallow_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unused_configs = true
+
+# Optional 'youtube' extra; unreachable from the sandbox (no PyPI). Lazy-imported.
+[[tool.mypy.overrides]]
+module = ["youtube_transcript_api.*"]
+ignore_missing_imports = true
 
 # pypdf is lazily imported and may be absent in the offline build sandbox; allow
 # mypy to type-check the rest of the module without its stubs (ADR 0014). pypdf

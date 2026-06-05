@@ -166,6 +166,11 @@
       [ADR 0021](adrs/0021-brave-search-adapter.md).
   - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
     free-model JSON reliability proves insufficient.
+  - 🔨 **M-LP.4 (YouTube ingestion):** `TranscriptProvider` seam + `FakeTranscriptProvider`
+    + real `YouTubeTranscriptProvider` (`youtube-transcript-api`, optional `[youtube]` extra,
+    lazy-imported) wired into `IngestionService` for `SourceType.YOUTUBE`. Opens the YouTube
+    path ADR 0008 deferred; pure `extract_video_id`/`normalize_transcript` helpers, timestamps
+    discarded in v1. Hermetic + `@pytest.mark.integration` live. [ADR 0015](adrs/0015-youtube-ingestion.md).
   - ✅ **M-LP.4 (PDF ingestion):** second parser behind the ingestion seam — a `PdfParser`
     protocol + `pypdf`-backed `PypdfParser` (lazy import, offline-safe to construct) +
     `FakePdfParser`, routed for `SourceType.PDF` in `IngestionService`; content-type allowlist
