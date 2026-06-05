@@ -62,6 +62,8 @@ from app.media.tts.nvidia import NvidiaTtsProvider
 from app.media.tts.router import TTSRouter
 from app.media.tts.supervised import SupervisedTtsProvider
 from app.media.visuals.base import VisualProvider
+from app.media.visuals.generative import GenerativeVisualProvider
+from app.media.visuals.generative_router import build_generative_visual_provider
 from app.media.visuals.stock import StockVisualProvider
 from app.services.ingestion.httpx_fetch import HttpxFetchProvider
 from app.services.ingestion.service import IngestionService
@@ -293,6 +295,11 @@ class MediaDeps:
     visuals: VisualProvider | None = None
     visual_sink: VisualSink | None = None
     voice: str = "narrator"
+    # AI generative-video source (ADR 0053), config-selected and ``None`` when
+    # ``generative_video_backend`` is unset. Capability-before-wiring: built and
+    # closed by the composition root, but not yet consumed by the render path
+    # (which still uses ``visuals`` retrieval); the documented ADR 0053 follow-up.
+    generative_visuals: GenerativeVisualProvider | None = None
 
 
 @dataclass(frozen=True)
@@ -455,12 +462,20 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
         visual_sink = _make_filesystem_visual_sink(output_dir)
         closables.append(stock)
 
+    # Optional AI generative-video source (ADR 0053), config-selected; ``None``
+    # when ``generative_video_backend`` is unset. The httpx-owning adapters are
+    # closed on shutdown like the stock provider.
+    generative_visuals = build_generative_visual_provider(resolved)
+    if isinstance(generative_visuals, AsyncClosable):
+        closables.append(generative_visuals)
+
     deps = MediaDeps(
         tts=tts,
         composition=composition,
         visuals=visuals,
         visual_sink=visual_sink,
         voice=resolved.tts_voice,
+        generative_visuals=generative_visuals,
     )
     return MediaBundle(deps=deps, closables=tuple(closables))
 

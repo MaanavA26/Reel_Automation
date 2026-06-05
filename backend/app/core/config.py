@@ -120,6 +120,31 @@ class Settings(BaseSettings):
     huggingface_tts_model: str = "hexgrad/Kokoro-82M"
     huggingface_tts_api_key: SecretStr = SecretStr("")
 
+    # Generative-video fabric (ADR 0053): AI text-to-video adapters behind the
+    # `GenerativeVisualProvider` seam, selected by `generative_video_backend`
+    # (one of veo/runway/luma/pika/kling). Empty (the default) leaves the feature
+    # off — the existing stock-retrieval/ffmpeg path is unaffected. Each backend
+    # joins only when its credentials below are set; all keys are SecretStr so
+    # they never leak into logs/reprs. Wired by `build_generative_visual_provider`
+    # (capability-before-wiring: not yet plumbed into the render path; ADR 0053).
+    generative_video_backend: str = ""
+    # Runway / Luma — static bearer keys.
+    runway_api_key: SecretStr = SecretStr("")
+    luma_api_key: SecretStr = SecretStr("")
+    # Pika — served via fal.ai (no first-party API); needs a fal key.
+    pika_fal_api_key: SecretStr = SecretStr("")
+    # Kling — JWT minted from an access key + secret key (not a static token).
+    kling_access_key: SecretStr = SecretStr("")
+    kling_secret_key: SecretStr = SecretStr("")
+    # Veo (Vertex AI) — a GCP OAuth access token (caller mints/refreshes it; the
+    # token-refresh deferral mirrors YouTube publish, ADR 0033), the GCP project
+    # id + region, and a gs:// storage prefix so Veo returns a fetchable GCS uri
+    # rather than inline base64.
+    veo_access_token: SecretStr = SecretStr("")
+    veo_project: str = ""
+    veo_location: str = "us-central1"
+    veo_storage_uri: str = ""
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
