@@ -127,8 +127,14 @@
     composition root + `python -m app.cli.plan` harness + `@pytest.mark.integration` live test.
     **The Planner is now runnable against a real free LLM.** [ADR 0007](adrs/0007-openai-compatible-llm-adapter.md).
   - ⬜ **M-LP.2 (search):** real `SearchProvider` adapter (unblocks Source Discovery end-to-end).
-  - ⬜ **M-LP.3 (optional):** provider-SDK adapters (e.g. Gemini native `response_schema`) if
-    free-model JSON reliability proves insufficient.
+  - ✅ **M-LP.3 (LLM, Gemini-native):** `GeminiProvider` (httpx, `generateContent` REST) — the
+    second concrete `ModelProvider`, whose value over M-LP.1 is **native structured output**:
+    `responseSchema` + `responseMimeType: application/json` constrain decoding server-side
+    (vs schema-in-prompt). A bounded `_to_gemini_schema` sanitizer inlines `$ref`/`$defs` and
+    drops Gemini-rejected keys; `x-goog-api-key` header auth (no key in URL); one error-fed
+    repair retry. Gemini-specific `Settings` (`gemini_api_key`/`gemini_base_url`/`gemini_model`);
+    `httpx.MockTransport` unit tests (incl. nested-schema sanitization) + `@pytest.mark.integration`
+    live smoke test. Router wiring is a trivial deferred follow-up. [ADR 0020](adrs/0020-gemini-native-adapter.md).
 
 ## Ops / Infrastructure
 - ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
