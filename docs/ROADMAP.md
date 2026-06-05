@@ -193,6 +193,17 @@
     repair retry. Gemini-specific `Settings` (`gemini_api_key`/`gemini_base_url`/`gemini_model`);
     `httpx.MockTransport` unit tests (incl. nested-schema sanitization) + `@pytest.mark.integration`
     live smoke test. Router wiring is a trivial deferred follow-up. [ADR 0020](adrs/0020-gemini-native-adapter.md).
+  - ✅ **M-LP (resilience):** LLM retry + policy-driven fallback (`services/llm/resilience.py`) — the
+    deterministic *service* half of fault tolerance (CLAUDE.md §4), realizing the retries ADR 0005
+    deferred and engaging ADR 0003's `FALLBACK` slot. A `ResilientModelProvider` decorator (bounded
+    retry-with-backoff, `ModelProvider`-in/out drop-in) + a `complete_with_fallback` helper /
+    `ResilientRouter` (one policy-driven `FALLBACK` hop on terminal primary failure — no retry-of-retry).
+    Provider-neutral by injection (stdlib only; `retry_on` + async sleeper injected — the
+    transient-vs-permanent narrowing is the wiring site's job); self-/no-fallback guards re-raise the
+    primary error. Hermetic + deterministic (recording sleeper asserts the backoff schedule, raising
+    fake asserts retry count + fallback). Capability only, no wiring. Reconciles with ADR 0005's
+    node-level `RetryPolicy` (provider-level composes *under* the node); the "when to give up" judgment
+    stays with the Orchestrator. [ADR 0027](adrs/0027-llm-resilience.md).
 
 ## Ops / Infrastructure
 - ✅ **Containerization + deploy CI.** Multi-stage `backend/Dockerfile` (non-root, slim, uvicorn
