@@ -470,23 +470,40 @@ Claude should therefore favor implementations that are:
 
 ---
 
-# 13. Immediate stage of the repository
+# 13. Current stage of the repository
 
-At the current stage, the repository is in **early scaffold / architecture-definition mode**.
+The repository is **feature-complete through Horizon-1** (as of 2026-06-06).
+Built, merged, and covered by ~900 hermetic tests on a green `main` (ADRs through
+0054):
 
-The key priorities right now are:
+- the **Deep Research engine** (M1–M12): plan → acquire → ingest → extract →
+  verify → synthesize → critique (bounded revision loop) → report → creator packet;
+- the **Media Production layer**: TTS (local Kokoro default + adapters), captions,
+  B-roll, FFmpeg composition, SEO/thumbnails;
+- the **model fabric**: multi-provider router, cache, retry/fallback, budgets, eval;
+- **Horizon-1**: human-review/approval gate (0051), TTS QA loop (0052),
+  generative-video adapters — Veo/Runway/Luma/Pika/Kling (0053) — and the
+  **closed-loop automation runner** (0054: topics → research → media → safety →
+  review → publish → analytics feedback; `supervised` and `autonomous` modes).
 
-1. establish clean repo structure
-2. encode architecture intent
-3. create durable repo guidance
-4. scaffold backend/frontend foundations
-5. prepare the codebase for the Deep Research component
-6. avoid speculative overbuilding
+`docs/ROADMAP.md` is the live milestone status; `ARCHITECTURE.md` is the as-built
+system map.
+
+## The gating priority now: the last mile (live validation)
+
+The engine has **never produced a real video** — everything is verified
+hermetically (fake providers, no network/keys/ffmpeg in the build sandbox). The
+single highest-value next step is one live `topic → published video` run on a real
+machine with real keys, validating the documented-not-yet-live provider contracts
+(the 5 generative-video adapters, NVIDIA TTS, YouTube upload, and `autonomous`-mode
+auto-posting) one at a time. **"Merged + hermetic-green" is not "the live path
+works."** After the last mile: Horizon 2 (real TikTok/IG publishers, multi-channel,
+ops at scale) then Horizon 3 (multi-tenant SaaS — auth, usage metering, billing).
 
 ## Important
-Do not prematurely implement the entire product.
-
-Prefer controlled, bounded, component-aligned progress.
+The component-by-component discipline still governs: bounded scope, reviewable
+diffs, agent/tool separation, an ADR per architectural decision, and extending
+established patterns over inventing new ones.
 
 ---
 

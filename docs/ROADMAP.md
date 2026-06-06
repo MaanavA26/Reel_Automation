@@ -523,12 +523,31 @@
   `@pytest.mark.integration` smoke). Capability only — no wiring (no `config.py`/`api/` change); adoption
   is a later orchestrator/topic-queue change. [ADR 0036](adrs/0036-analytics-feedback.md).
 
+## Horizon-1 — content quality + the closed loop (CLAUDE.md §13)
+> Built 2026-06-06 via a worktree-isolated background sub-agent fleet; each milestone is a
+> merged PR with an ADR and hermetic tests. These are deterministic *tools* + the existing
+> supervised agents — no new agent class. **Live caveat:** the generative-video adapters and
+> `autonomous`-mode auto-posting are built to documented contracts, **not yet live-validated**.
+- ✅ **H1-B — Human-review / approval gate.** `app/review/` — `ReviewService` (tool) +
+  `ReviewRecord`/`ReviewStatus` + API (`GET /reviews?status=pending_review`, approve/reject).
+  The human-in-the-loop HOLD point between the safety gate and publish. [ADR 0051](adrs/0051-human-review-approval-gate.md).
+- ✅ **H1-C — TTS QA loop.** `media/tts/qa.py` + `qa_loop.py` — deterministic text-derived-duration
+  QA + supervised bounded re-synthesis (the existing `TTSSupervisorAgent` re-routes; code owns the
+  cap; best-effort completes). Waveform-level QA deferred (needs real audio). [ADR 0052](adrs/0052-tts-qa-loop.md).
+- ✅ **H1-A — Generative-video adapters.** `media/visuals/generative.py` + `generative_providers/`
+  — provider-neutral `GenerativeVisualProvider` seam + Veo/Runway/Luma/Pika/Kling adapters + config
+  selector + fake. Same `VisualClip` out, so composition is unchanged. [ADR 0053](adrs/0053-generative-video-adapters.md).
+- ✅ **H1-D — Closed-loop automation runner.** `scheduler/closed_loop.py` + `cli/run_loop.py` —
+  realizes ADR 0034's deferred driver loop: topics → queue → `BatchRunner(VideoPipeline)` → safety
+  gate → review gate → publish → analytics feedback. Injected clock, budget guardrails, error
+  isolation, graceful shutdown. `supervised` (default, nothing auto-posts) / `autonomous` (opt-in)
+  modes. [ADR 0054](adrs/0054-closed-loop-automation-runner.md).
+
 ---
-*Updated 2026-06-05. Deep Research milestone: **M12** (Creator packet) next; M1–M11 built. Separately, the **Media Production Layer** (CLAUDE.md §3.3, second major component) is seam-scaffolded — see its section above and [ADR 0019](adrs/0019-media-production-layer.md).*
-*Updated 2026-06-05. Reasoning band complete through **M10b** (bounded revision loop). M1–M10b
-+ M-LP.1 (LLM adapter) implemented; the Planner runs live (Gemini/Groq), the pipeline
-fetches+chunks real web sources, and synthesize→critique→(revise) runs end-to-end. Next:
-M11 (report/export).*
+*Updated 2026-06-06. **Deep Research M1–M12 complete; Media Production layer built; Horizon-1
+complete** (ADRs 0051–0054). `main` green, ~900 hermetic tests, ADRs through 0054. **Next: the
+last mile** — first live `topic → published video` run with real keys + ffmpeg, validating the
+documented-not-yet-live provider contracts one at a time (see CLAUDE.md §13).*
 
 > **Build-environment note:** the agent sandbox can reach **HTTP/API egress** (live LLM calls
 > and web fetches work) but **not the pip/PyPI index** (no `pip install`). So milestones are
