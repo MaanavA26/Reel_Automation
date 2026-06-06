@@ -9,7 +9,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Typed: mypy](https://img.shields.io/badge/typed-mypy-blue.svg)](https://mypy-lang.org/)
 [![Lint: ruff](https://img.shields.io/badge/lint-ruff-orange.svg)](https://docs.astral.sh/ruff/)
-[![Tests: 600+](https://img.shields.io/badge/tests-600%2B-brightgreen.svg)](#testing--quality)
+[![Tests: 900+](https://img.shields.io/badge/tests-900%2B-brightgreen.svg)](#testing--quality)
 
 **Topic → Deep Research → Script → Voice + B-roll + Captions → Video → Publish → Learn.**
 
@@ -88,7 +88,7 @@ A disciplined separation that keeps the system honest and explainable:
 - **A typed state object** (`ResearchState`) threads through a **LangGraph** workflow; every node returns a partial update and the graph re-validates under a strict schema.
 - **A provider-neutral model fabric** routes each *role* (planning / extraction / long-context / fallback) to a configured model — OpenAI-compatible, Gemini-native, or a registry of Groq / NVIDIA / HuggingFace / Ollama — with **caching, retry+fallback, and budget guardrails** layered as composable decorators.
 
-Every non-trivial decision is captured as an **Architecture Decision Record** ([`docs/adrs/`](./docs/adrs/) — 40+ ADRs) and explained for an external audience in [`docs/showcase/`](./docs/showcase/).
+Every non-trivial decision is captured as an **Architecture Decision Record** ([`docs/adrs/`](./docs/adrs/) — 50+ ADRs) and explained for an external audience in [`docs/showcase/`](./docs/showcase/).
 
 ---
 
@@ -96,7 +96,7 @@ Every non-trivial decision is captured as an **Architecture Decision Record** ([
 
 - 🔎 **Deep Research, not RAG-lite** — multi-source discovery, cross-verification, contradiction detection, editorial revision loop.
 - 🛡️ **Anti-hallucination by construction** — source-grounded citations and code-derived caveats that can't be dropped.
-- 🧱 **Production-grade** — fully typed, strict-schema, 600+ hermetic tests, ADR-documented, CI-gated.
+- 🧱 **Production-grade** — fully typed, strict-schema, 900+ hermetic tests, ADR-documented, CI-gated.
 - 🔌 **Provider-agnostic** — swap LLM / search / TTS / visual / publishing providers by config; one OpenAI-compatible adapter serves many backends.
 - 🎥 **End-to-end media** — TTS, deterministic SRT/VTT captions, stock B-roll retrieval, FFmpeg assembly, SEO metadata + thumbnails.
 - 🤖 **Built to run unattended** — topic/trend sourcing → batch scheduler → safety gate → multi-platform publishing → analytics feedback loop.
@@ -154,8 +154,10 @@ This is an **actively-built, component-first system.** Honest snapshot:
 | Model fabric (multi-provider, cache, retry/fallback, budgets, eval) | ✅ Complete |
 | Media production (TTS, captions, B-roll, ffmpeg, SEO, thumbnails) | ✅ Adapters built |
 | Publishing (YouTube + TikTok/IG seams), scheduler, analytics, safety gate | ✅ Built |
+| **Horizon-1**: human-review gate, TTS QA loop, generative-video adapters (Veo/Runway/Luma/Pika/Kling) | ✅ Built |
+| **Closed-loop runner** (topics → research → media → safety → review → publish → analytics) | ✅ Built (`supervised` / `autonomous`) |
 | API + React studio + Python client | ✅ Built |
-| **End-to-end live wiring** (config-selected providers → finished `.mp4` → posted) | 🔨 **In progress** |
+| **End-to-end live wiring** (real keys → finished `.mp4` → posted) | 🔨 **The last mile — needs live keys** |
 
 The engine and every component exist and are tested hermetically; the remaining work is the **"last mile"** — wiring the live providers into the composition root and a single `topic → posted video` run with real keys + ffmpeg. The architecture is designed so that's configuration, not redesign.
 
@@ -196,8 +198,9 @@ Design decisions are recorded as ADRs; architectural changes come with one. Read
 
 ## Roadmap
 
-- **Now:** end-to-end live wiring → first auto-produced, auto-published video.
-- **Next:** richer B-roll/video generation, durable multi-worker job store, streaming progress.
+- **Done (Horizon-1):** human-review/approval gate, TTS QA loop, generative-video adapters (Veo/Runway/Luma/Pika/Kling), and the closed-loop automation runner.
+- **Now (the last mile):** first live `topic → published video` run with real keys + ffmpeg — validating the documented-not-yet-live provider contracts one at a time.
+- **Next:** real TikTok/IG publishers (only YouTube is live today), durable multi-worker job store, streaming progress, multi-channel/brand profiles.
 - **Later:** analytics-driven topic selection, brand/style memory, and a **multi-tenant hosted SaaS** so other creators can run their own channels.
 
 ---
