@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,10 +37,21 @@ class Settings(BaseSettings):
     # auth/config errors) with bounded exponential backoff. `1` (the default)
     # disables retry — the pre-wiring behavior the hermetic tests assume. The
     # delay defaults are sized for free-tier per-minute rate windows.
-    llm_retry_max_attempts: int = 1
-    llm_retry_base_delay: float = 5.0
-    llm_retry_backoff_factor: float = 2.0
-    llm_retry_max_delay: float = 60.0
+    llm_retry_max_attempts: int = Field(default=1, ge=1)
+    llm_retry_base_delay: float = Field(default=5.0, ge=0.0)
+    llm_retry_backoff_factor: float = Field(default=2.0, ge=1.0)
+    llm_retry_max_delay: float = Field(default=60.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_retry_delays(self) -> Settings:
+        """Reject an inverted delay ladder at parse time, not at composition."""
+        if self.llm_retry_max_delay < self.llm_retry_base_delay:
+            raise ValueError(
+                "llm_retry_max_delay must be >= llm_retry_base_delay "
+                f"(got max_delay={self.llm_retry_max_delay}, "
+                f"base_delay={self.llm_retry_base_delay})"
+            )
+        return self
 
     # Provider connection (used by the OpenAI-compatible adapter). Empty by
     # default; set via .env / env vars for live use. `api_key` is a SecretStr so
