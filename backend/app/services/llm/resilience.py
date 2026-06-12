@@ -58,6 +58,13 @@ class RetryConfig:
             else propagates immediately. Provider-neutral by injection — the
             wiring site narrows this to its provider's transient errors (e.g.
             ``httpx.TransportError`` / HTTP 429/5xx); see ADR 0027.
+        retry_if: Optional predicate refining ``retry_on`` *instances*: called
+            with the caught exception; return ``False`` to treat it as permanent
+            (propagate immediately, no retry). ``None`` (the default) retries
+            every ``retry_on`` instance. Needed because one exception type can
+            carry both transient and permanent failures (e.g.
+            ``httpx.HTTPStatusError`` is a 429 *and* a 401) — a type tuple alone
+            cannot express that narrowing.
     """
 
     def __init__(
@@ -68,6 +75,7 @@ class RetryConfig:
         backoff_factor: float = 2.0,
         max_delay: float = 30.0,
         retry_on: tuple[type[Exception], ...] = (Exception,),
+        retry_if: Callable[[Exception], bool] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ResilienceError("max_attempts must be >= 1")
@@ -82,6 +90,7 @@ class RetryConfig:
         self.backoff_factor = backoff_factor
         self.max_delay = max_delay
         self.retry_on = retry_on
+        self.retry_if = retry_if
 
     def delay_for(self, retry_index: int) -> float:
         """Backoff delay (seconds) before retry ``retry_index`` (0-based).
@@ -116,12 +125,11 @@ class ResilientModelProvider:
         self._inner = inner
         self._config = config or RetryConfig()
         self._sleep = sleep
-
-    @property
-    def name(self) -> str:
-        # Delegate so the decorated provider registers under the inner name;
-        # routing and call recording stay transparent.
-        return self._inner.name
+        # Mirror the inner provider's name so the decorated provider registers
+        # under it — routing and call recording stay transparent. A plain
+        # attribute (not a property) to satisfy the `ModelProvider` protocol's
+        # settable `name: str`, matching the `CachingModelProvider` precedent.
+        self.name = inner.name
 
     async def complete_structured(
         self,
@@ -141,6 +149,8 @@ class ResilientModelProvider:
                     schema=schema,
                 )
             except self._config.retry_on as exc:
+                if self._config.retry_if is not None and not self._config.retry_if(exc):
+                    raise
                 last_error = exc
                 is_last = attempt == self._config.max_attempts - 1
                 if is_last:

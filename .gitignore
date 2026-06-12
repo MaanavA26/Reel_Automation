@@ -34,3 +34,8 @@ secrets.*
 *.cer
 *.p12
 *.pfx
+__keys__.md
+
+# Local TTS model artifacts (downloaded per .env.example one-time setup; ~340MB).
+backend/kokoro-v1.0.onnx
+backend/voices-v1.0.bin
