@@ -147,7 +147,44 @@ def test_non_transient_error_is_not_retried() -> None:
         _call(provider)
 
     assert inner.calls == 1  # raised immediately, no retry
-    assert sleeper.delays == []
+
+
+# --- ResilientModelProvider: retry_if instance narrowing ----------------------
+
+
+def test_retry_if_false_propagates_matching_type_immediately() -> None:
+    # The 429-vs-401 case: one exception type, but the instance is permanent.
+    boom = _Transient("HTTP 401")
+    inner = _FlakyProvider(fail_times=1, error=boom, success=_Out(value="x"))
+    sleeper = _RecordingSleeper()
+    provider = ResilientModelProvider(
+        inner,
+        RetryConfig(max_attempts=3, retry_on=(_Transient,), retry_if=lambda exc: False),
+        sleep=sleeper,
+    )
+
+    with pytest.raises(_Transient) as exc_info:
+        _call(provider)
+
+    assert exc_info.value is boom  # the real provider error, not a wrapper
+    assert inner.calls == 1  # no retry
+    assert sleeper.delays == []  # and no backoff wait
+
+
+def test_retry_if_true_preserves_the_retry_path() -> None:
+    inner = _FlakyProvider(fail_times=2, error=_Transient(), success=_Out(value="ok"))
+    provider = ResilientModelProvider(
+        inner,
+        RetryConfig(
+            max_attempts=3, base_delay=1.0, retry_on=(_Transient,), retry_if=lambda exc: True
+        ),
+        sleep=_RecordingSleeper(),
+    )
+
+    out = _call(provider)
+
+    assert out.value == "ok"
+    assert inner.calls == 3  # 2 transient failures + 1 success, as without retry_if
 
 
 def test_max_attempts_one_disables_retry() -> None:

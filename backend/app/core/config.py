@@ -30,6 +30,18 @@ class Settings(BaseSettings):
     long_context_model: str = "claude-opus-4-8"
     fallback_model: str = "claude-haiku-4-5-20251001"
 
+    # LLM resilience wiring (the ADR 0027 retry capability, wired into the
+    # composition root). When `llm_retry_max_attempts` > 1 the composed
+    # `ModelProvider` is wrapped in a `ResilientModelProvider` that retries
+    # *transient* HTTP failures (429 rate limits, 5xx, transport faults — never
+    # auth/config errors) with bounded exponential backoff. `1` (the default)
+    # disables retry — the pre-wiring behavior the hermetic tests assume. The
+    # delay defaults are sized for free-tier per-minute rate windows.
+    llm_retry_max_attempts: int = 1
+    llm_retry_base_delay: float = 5.0
+    llm_retry_backoff_factor: float = 2.0
+    llm_retry_max_delay: float = 60.0
+
     # Provider connection (used by the OpenAI-compatible adapter). Empty by
     # default; set via .env / env vars for live use. `api_key` is a SecretStr so
     # it never leaks into logs or reprs. See .env.example.
