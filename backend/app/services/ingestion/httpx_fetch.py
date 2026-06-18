@@ -81,6 +81,7 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
         user_agent: str = _DEFAULT_UA,
         resolver: Resolver | None = None,
         dns_timeout: float = 5.0,
+        fetch_budget: float = 30.0,
     ) -> None:
         self._max_bytes = max_bytes
         self._max_redirects = max_redirects
@@ -90,6 +91,12 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
         # timeout of its own and the httpx `timeout` only covers the HTTP request,
         # not this SSRF pre-flight. See issue #111.
         self._dns_timeout = dns_timeout
+        # Total wall-clock budget for one source fetch (all redirect hops). httpx's
+        # `timeout` is PER-OPERATION (per read chunk), so a server that trickles
+        # bytes resets the read timeout forever and never trips it. This single
+        # budget bounds every hang vector at once — DNS, connect, slow-read, and
+        # redirect chains — so one bad host can't stall the pipeline (issue #111).
+        self._fetch_budget = fetch_budget
         self._owns_client = client is None
         # Redirects are handled manually (per-request follow_redirects=False) so
         # the SSRF/scheme guard re-runs on every hop; the client default is moot.
@@ -150,6 +157,22 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
                 raise FetchError(f"blocked private/reserved address {str(ip)!r} for host {host!r}")
 
     async def fetch(self, *, url: str) -> FetchedContent:
+        """Fetch ``url`` under a total wall-clock budget (issue #111).
+
+        Delegates to :meth:`_fetch_impl` inside ``asyncio.wait_for`` so no single
+        source — however it stalls (slow DNS, half-open connection, byte-trickle,
+        redirect chain) — can exceed ``fetch_budget``. On the budget expiring the
+        source surfaces as a `FetchError` and is skipped by the ingestion layer's
+        existing error isolation, never a hang.
+        """
+        try:
+            return await asyncio.wait_for(self._fetch_impl(url), timeout=self._fetch_budget)
+        except TimeoutError as exc:
+            raise FetchError(
+                f"fetch exceeded total budget (> {self._fetch_budget}s) for {url!r}"
+            ) from exc
+
+    async def _fetch_impl(self, url: str) -> FetchedContent:
         current = httpx.URL(url)
         headers = {"User-Agent": self._user_agent}
 
