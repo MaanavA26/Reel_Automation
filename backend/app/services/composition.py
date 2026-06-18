@@ -82,6 +82,7 @@ from app.services.llm.providers import (
     UnknownProviderPresetError,
     build_provider,
 )
+from app.services.llm.resilience import ResilientModelProvider, RetryConfig
 from app.services.llm.router import ModelRouter
 from app.services.search.base import SearchProvider
 from app.services.search.brave_search import BraveSearchProvider
@@ -175,6 +176,20 @@ def _build_model_provider(settings: Settings) -> ModelProvider:
     )
 
 
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """Wiring-site transient-vs-permanent narrowing (ADR 0027's deferral).
+
+    Retry only failures that can heal on their own: HTTP 429 (rate-limit window
+    resets), 5xx (server hiccup), and transport faults. Auth/config errors
+    (401/403/404, malformed-request 4xx) propagate immediately — retrying them
+    only delays the loud failure the composition root promises.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    return isinstance(exc, httpx.TransportError)
+
+
 def _build_router(settings: Settings) -> tuple[ModelRouter, ModelProvider]:
     """Build a `ModelRouter` + return its underlying provider for lifecycle.
 
@@ -185,12 +200,32 @@ def _build_router(settings: Settings) -> tuple[ModelRouter, ModelProvider]:
     under the config name is what makes role resolution succeed for every
     selectable backend.
 
-    The provider is also returned so the composition root can close its
-    httpx client on shutdown (ADR 0044) — the router itself is not closable.
+    When ``llm_retry_max_attempts`` > 1, the provider is registered wrapped in a
+    `ResilientModelProvider` (bounded retry-with-backoff on transient errors —
+    the ADR 0027 capability, wired here so free-tier 429 bursts back off until
+    the per-minute rate window resets instead of failing every call). Retry off
+    (the default) registers the bare adapter — hermetic behavior unchanged.
+
+    The *inner* provider is also returned so the composition root can close its
+    httpx client on shutdown (ADR 0044) — the router itself is not closable and
+    the retry decorator owns no client.
     """
     provider = _build_model_provider(settings)
+    registered: ModelProvider = provider
+    if settings.llm_retry_max_attempts > 1:
+        registered = ResilientModelProvider(
+            provider,
+            RetryConfig(
+                max_attempts=settings.llm_retry_max_attempts,
+                base_delay=settings.llm_retry_base_delay,
+                backoff_factor=settings.llm_retry_backoff_factor,
+                max_delay=settings.llm_retry_max_delay,
+                retry_on=(httpx.HTTPStatusError, httpx.TransportError),
+                retry_if=_is_transient_llm_error,
+            ),
+        )
     router = ModelRouter(
-        providers={settings.default_provider: provider},
+        providers={settings.default_provider: registered},
         policy=default_policy(settings),
     )
     return router, provider

@@ -414,6 +414,14 @@
       a second concrete provider for failover/robustness, `web.results[]` → `SearchResult`, `count`
       clamped to 20, offline-tested via `MockTransport` + a `@pytest.mark.integration` smoke test.
       [ADR 0021](adrs/0021-brave-search-adapter.md).
+  - ✅ **M-LP (retries):** LLM resilience **wired** — the ADR 0005/0027 deferral closed by the
+    first live run (issue #107: Groq free-tier 429s starved cross-verification — ~170 per-cluster
+    calls in one per-minute rate window → zero verdicts → fail-loud `VerificationError`).
+    `_build_router` now registers the provider wrapped in `ResilientModelProvider` when
+    `llm_retry_max_attempts` > 1 (default 1 = off, hermetic suite unchanged); transient-vs-permanent
+    narrowing at the wiring site via the new additive `RetryConfig.retry_if` instance predicate
+    (retry 429/5xx/transport, never auth 4xx). `.env.example` splits role models across separate
+    per-model free-tier rate buckets. [ADR 0055](adrs/0055-llm-resilience-wiring.md).
   - ✅ **Provider registry:** `app/services/llm/providers.py` — a `name → ProviderPreset`
     registry (`groq`, `nvidia`, `huggingface`, local `ollama`) + `build_provider(name, settings)`.
     Operator selects a known backend by name (registry owns the `base_url`) and supplies only the

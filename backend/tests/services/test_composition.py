@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -22,12 +23,14 @@ from app.services.composition import (
     _build_model_provider,
     _build_router,
     _build_search_provider,
+    _is_transient_llm_error,
     build_media_deps,
     build_research_deps,
 )
 from app.services.llm.base import ModelRole
 from app.services.llm.gemini import GeminiProvider
 from app.services.llm.openai_compatible import OpenAICompatibleProvider
+from app.services.llm.resilience import ResilientModelProvider
 from app.services.search.brave_search import BraveSearchProvider
 from app.services.search.live import TavilySearchProvider
 
@@ -111,6 +114,44 @@ def test_router_registers_provider_under_config_name_so_policy_resolves() -> Non
     )
     bound = router.for_role(ModelRole.PLANNING)  # must not raise
     assert bound.provider_name == "openai-compatible"  # the adapter's own name
+
+
+# --- LLM resilience wiring (retry gate) ---------------------------------------
+
+
+def test_retry_disabled_by_default_registers_bare_adapter() -> None:
+    settings = _settings()
+    router, provider = _build_router(settings)
+    # Reach into the registry: the gate must not wrap when max_attempts is 1.
+    assert router._providers[settings.default_provider] is provider
+    assert isinstance(provider, OpenAICompatibleProvider)
+
+
+def test_retry_enabled_registers_wrapped_adapter_and_returns_inner() -> None:
+    settings = _settings(llm_retry_max_attempts=3)
+    router, provider = _build_router(settings)
+    registered = router._providers[settings.default_provider]
+    assert isinstance(registered, ResilientModelProvider)
+    # Lifecycle gets the *inner* adapter (it owns the httpx client; ADR 0044).
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert registered.name == provider.name  # the decorator is routing-invisible
+
+
+def test_transient_llm_error_narrowing() -> None:
+    # 429 + 5xx + transport faults retry; auth/config 4xx propagate immediately.
+    def status_error(code: int) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://api.example.com/v1/chat")
+        return httpx.HTTPStatusError(
+            f"HTTP {code}", request=request, response=httpx.Response(code, request=request)
+        )
+
+    assert _is_transient_llm_error(status_error(429))
+    assert _is_transient_llm_error(status_error(500))
+    assert _is_transient_llm_error(status_error(503))
+    assert _is_transient_llm_error(httpx.ConnectTimeout("boom"))
+    assert not _is_transient_llm_error(status_error(401))
+    assert not _is_transient_llm_error(status_error(404))
+    assert not _is_transient_llm_error(ValueError("not http at all"))
 
 
 # --- Search provider selection -----------------------------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +29,29 @@ class Settings(BaseSettings):
     extraction_model: str = "claude-sonnet-4-6"
     long_context_model: str = "claude-opus-4-8"
     fallback_model: str = "claude-haiku-4-5-20251001"
+
+    # LLM resilience wiring (the ADR 0027 retry capability, wired into the
+    # composition root). When `llm_retry_max_attempts` > 1 the composed
+    # `ModelProvider` is wrapped in a `ResilientModelProvider` that retries
+    # *transient* HTTP failures (429 rate limits, 5xx, transport faults — never
+    # auth/config errors) with bounded exponential backoff. `1` (the default)
+    # disables retry — the pre-wiring behavior the hermetic tests assume. The
+    # delay defaults are sized for free-tier per-minute rate windows.
+    llm_retry_max_attempts: int = Field(default=1, ge=1)
+    llm_retry_base_delay: float = Field(default=5.0, ge=0.0)
+    llm_retry_backoff_factor: float = Field(default=2.0, ge=1.0)
+    llm_retry_max_delay: float = Field(default=60.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_retry_delays(self) -> Settings:
+        """Reject an inverted delay ladder at parse time, not at composition."""
+        if self.llm_retry_max_delay < self.llm_retry_base_delay:
+            raise ValueError(
+                "llm_retry_max_delay must be >= llm_retry_base_delay "
+                f"(got max_delay={self.llm_retry_max_delay}, "
+                f"base_delay={self.llm_retry_base_delay})"
+            )
+        return self
 
     # Provider connection (used by the OpenAI-compatible adapter). Empty by
     # default; set via .env / env vars for live use. `api_key` is a SecretStr so
