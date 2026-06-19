@@ -197,3 +197,48 @@ def test_aborts_oversized_stream_without_declared_length() -> None:
 
     with pytest.raises(FetchError, match="too large"):
         asyncio.run(_provider(handler, max_bytes=1000).fetch(url="https://a.com"))
+
+
+# --- Hang prevention: bounded DNS + total fetch budget (issue #111) -----------
+
+
+def test_dns_resolution_timeout_raises_not_hangs() -> None:
+    # A resolver that blocks far longer than dns_timeout must surface as a
+    # FetchError (the source is skipped) rather than hang the pipeline. The
+    # resolver runs in a worker thread (asyncio.to_thread) under wait_for, so the
+    # call returns promptly even though the thread is still blocked.
+    import time
+
+    def slow_resolver(host: str) -> list[str]:
+        # 2s >> the 0.05s dns_timeout (proves the bound); kept short because this
+        # sync sleep runs in a worker thread that wait_for can't cancel, so a
+        # longer value would only delay the event loop's teardown.
+        time.sleep(2)
+        return ["93.184.216.34"]
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - never reached
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=b"x")
+
+    started = asyncio.run(_timed_fetch_error(handler, dns_timeout=0.05, resolver=slow_resolver))
+    assert started < 5.0  # returned fast, did not block on the 30s resolver
+
+
+def test_total_fetch_budget_timeout_raises_not_hangs() -> None:
+    # A server that stalls (here: an async handler that sleeps past the budget)
+    # must trip the total per-fetch wall-clock budget and surface as a FetchError,
+    # never an unbounded hang (the slow-read trickle class of failure).
+    async def slow_handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=b"x")
+
+    elapsed = asyncio.run(_timed_fetch_error(slow_handler, fetch_budget=0.05))
+    assert elapsed < 5.0  # bounded by the budget, not the 30s sleep
+
+
+async def _timed_fetch_error(handler: Any, **kwargs: Any) -> float:
+    """Run a fetch expected to raise FetchError; return the wall-clock elapsed."""
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(FetchError):
+        await _provider(handler, **kwargs).fetch(url="https://a.com")
+    return loop.time() - start
