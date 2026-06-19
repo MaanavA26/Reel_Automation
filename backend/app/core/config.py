@@ -30,6 +30,27 @@ class Settings(BaseSettings):
     long_context_model: str = "claude-opus-4-8"
     fallback_model: str = "claude-haiku-4-5-20251001"
 
+    # Per-role provider overrides (multi-provider fabric, #113). Empty => fall
+    # back to `default_provider`. This is what tiers the fabric: route the
+    # judgment-heavy roles to a capable cloud model (e.g. nvidia +
+    # meta/llama-3.3-70b-instruct) while bulk roles run on a small/local one
+    # (ollama + a 3B) — big models for judgment, small for bulk (CLAUDE.md §6).
+    # Each names a provider the composition root can build (openai-compatible /
+    # gemini / a PROVIDER_REGISTRY preset). Pooling distinct providers across
+    # roles also spreads load over independent free-tier rate buckets.
+    planning_provider: str = ""
+    extraction_provider: str = ""
+    long_context_provider: str = ""
+    fallback_provider: str = ""
+
+    # Providers (comma-separated names) that should use schema-constrained
+    # decoding: the OpenAI-compatible adapter sends the caller's JSON Schema as a
+    # `json_schema` response_format so the backend *constrains* output to valid
+    # matching JSON. Small local models need this to satisfy strict Pydantic
+    # schemas; capable cloud models ground fine without it (and may not support
+    # it). Default targets the local `ollama` preset.
+    llm_schema_format_providers: str = "ollama"
+
     # LLM resilience wiring (the ADR 0027 retry capability, wired into the
     # composition root). When `llm_retry_max_attempts` > 1 the composed
     # `ModelProvider` is wrapped in a `ResilientModelProvider` that retries

@@ -125,10 +125,22 @@ def _unique_token(prefix: str) -> str:
 # --- Model provider selection (ADR 0032) ------------------------------------
 
 
-def _build_model_provider(settings: Settings) -> ModelProvider:
-    """Build the configured LLM `ModelProvider`, or fail loud.
+def _schema_format_providers(settings: Settings) -> frozenset[str]:
+    """Provider names that should use schema-constrained decoding (#113).
 
-    Dispatches on ``default_provider``:
+    Parsed from the comma-separated ``llm_schema_format_providers`` setting. Small
+    local models (Ollama) need this to satisfy strict Pydantic schemas; capable
+    cloud models ground fine without it (and may not support it).
+    """
+    raw = settings.llm_schema_format_providers.split(",")
+    return frozenset(n.strip() for n in raw if n.strip())
+
+
+def _build_named_provider(name: str, settings: Settings) -> ModelProvider:
+    """Build the LLM `ModelProvider` named ``name``, or fail loud.
+
+    Dispatches on the provider ``name`` (so the multi-provider router can build a
+    *different* provider per role, #113):
 
     * ``openai-compatible`` — the generic adapter over ``base_url`` + ``api_key``.
     * ``gemini`` — the native Gemini adapter (server-side structured output).
@@ -136,44 +148,45 @@ def _build_model_provider(settings: Settings) -> ModelProvider:
       ``ollama``) — reuses `app.services.llm.providers.build_provider`, which owns
       each preset's ``base_url`` (we do not re-implement the registry here).
 
-    Any unknown name or missing key surfaces as `CompositionError` rather than an
-    opaque 401/404 at the first model call.
+    Schema-constrained decoding is enabled for the providers named in
+    ``llm_schema_format_providers``. Any unknown name or missing key surfaces as
+    `CompositionError` rather than an opaque 401/404 at the first model call.
     """
-    name = settings.default_provider
+    use_schema = name in _schema_format_providers(settings)
     if name == OpenAICompatibleProvider.name:
         if not settings.base_url:
-            raise CompositionError(
-                "default_provider='openai-compatible' requires REEL_AUTOMATION_BASE_URL"
-            )
+            raise CompositionError("provider 'openai-compatible' requires REEL_AUTOMATION_BASE_URL")
         if not settings.api_key.get_secret_value():
-            raise CompositionError(
-                "default_provider='openai-compatible' requires REEL_AUTOMATION_API_KEY"
-            )
+            raise CompositionError("provider 'openai-compatible' requires REEL_AUTOMATION_API_KEY")
         return OpenAICompatibleProvider(
             base_url=settings.base_url,
             api_key=settings.api_key.get_secret_value(),
+            use_schema_format=use_schema,
         )
     if name == GeminiProvider.name:
         if not settings.gemini_api_key.get_secret_value():
-            raise CompositionError(
-                "default_provider='gemini' requires REEL_AUTOMATION_GEMINI_API_KEY"
-            )
+            raise CompositionError("provider 'gemini' requires REEL_AUTOMATION_GEMINI_API_KEY")
         return GeminiProvider(
             api_key=settings.gemini_api_key.get_secret_value(),
             base_url=settings.gemini_base_url,
         )
     if name in PROVIDER_REGISTRY:
         try:
-            return build_provider(name, settings)
+            return build_provider(name, settings, use_schema_format=use_schema)
         except (UnknownProviderPresetError, MissingProviderKeyError) as exc:
             raise CompositionError(str(exc)) from exc
     known = ", ".join(
         sorted({OpenAICompatibleProvider.name, GeminiProvider.name, *PROVIDER_REGISTRY})
     )
     raise CompositionError(
-        f"no model provider adapter for default_provider={name!r}; set "
-        f"REEL_AUTOMATION_DEFAULT_PROVIDER to one of: {known}"
+        f"no model provider adapter for provider={name!r}; set the role/default "
+        f"provider to one of: {known}"
     )
+
+
+def _build_model_provider(settings: Settings) -> ModelProvider:
+    """Back-compat shim: build the ``default_provider``'s adapter (single-provider)."""
+    return _build_named_provider(settings.default_provider, settings)
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
@@ -190,45 +203,52 @@ def _is_transient_llm_error(exc: Exception) -> bool:
     return isinstance(exc, httpx.TransportError)
 
 
-def _build_router(settings: Settings) -> tuple[ModelRouter, ModelProvider]:
-    """Build a `ModelRouter` + return its underlying provider for lifecycle.
+def _maybe_resilient(provider: ModelProvider, settings: Settings) -> ModelProvider:
+    """Wrap a provider in bounded retry-with-backoff when configured (ADR 0027).
 
-    The provider is registered under the **config name** (``default_provider``),
-    not the adapter's own ``.name``: the default policy keys every role by
-    ``default_provider``, and a registry preset's adapter is always named
-    ``"openai-compatible"`` regardless of the preset (``groq`` etc.). Registering
-    under the config name is what makes role resolution succeed for every
-    selectable backend.
-
-    When ``llm_retry_max_attempts`` > 1, the provider is registered wrapped in a
-    `ResilientModelProvider` (bounded retry-with-backoff on transient errors —
-    the ADR 0027 capability, wired here so free-tier 429 bursts back off until
-    the per-minute rate window resets instead of failing every call). Retry off
-    (the default) registers the bare adapter — hermetic behavior unchanged.
-
-    The *inner* provider is also returned so the composition root can close its
-    httpx client on shutdown (ADR 0044) — the router itself is not closable and
-    the retry decorator owns no client.
+    When ``llm_retry_max_attempts`` > 1, free-tier 429 bursts back off until the
+    per-minute rate window resets instead of failing every call. Retry off (the
+    default) returns the bare adapter — hermetic behavior unchanged.
     """
-    provider = _build_model_provider(settings)
-    registered: ModelProvider = provider
-    if settings.llm_retry_max_attempts > 1:
-        registered = ResilientModelProvider(
-            provider,
-            RetryConfig(
-                max_attempts=settings.llm_retry_max_attempts,
-                base_delay=settings.llm_retry_base_delay,
-                backoff_factor=settings.llm_retry_backoff_factor,
-                max_delay=settings.llm_retry_max_delay,
-                retry_on=(httpx.HTTPStatusError, httpx.TransportError),
-                retry_if=_is_transient_llm_error,
-            ),
-        )
-    router = ModelRouter(
-        providers={settings.default_provider: registered},
-        policy=default_policy(settings),
+    if settings.llm_retry_max_attempts <= 1:
+        return provider
+    return ResilientModelProvider(
+        provider,
+        RetryConfig(
+            max_attempts=settings.llm_retry_max_attempts,
+            base_delay=settings.llm_retry_base_delay,
+            backoff_factor=settings.llm_retry_backoff_factor,
+            max_delay=settings.llm_retry_max_delay,
+            retry_on=(httpx.HTTPStatusError, httpx.TransportError),
+            retry_if=_is_transient_llm_error,
+        ),
     )
-    return router, provider
+
+
+def _build_router(settings: Settings) -> tuple[ModelRouter, tuple[ModelProvider, ...]]:
+    """Build a multi-provider `ModelRouter` + the inner providers for lifecycle (#113).
+
+    Builds **every distinct provider** the role policy references (so judgment
+    roles can route to a capable cloud model while bulk roles run on a small/local
+    one), registering each under its **config name** — the name the policy keys by
+    (a registry preset's adapter is always named ``"openai-compatible"`` regardless
+    of the preset, which would not match a policy keyed by ``"nvidia"``). Each
+    provider is wrapped per `_maybe_resilient`.
+
+    Returns the router plus the tuple of *inner* providers (pre-retry-wrapper) so
+    the composition root can close their httpx clients on shutdown (ADR 0044) —
+    the router is not closable and the retry decorator owns no client.
+    """
+    policy = default_policy(settings)
+    names = sorted({choice.provider for choice in policy.values()})
+    inners: list[ModelProvider] = []
+    registered: dict[str, ModelProvider] = {}
+    for name in names:
+        inner = _build_named_provider(name, settings)
+        inners.append(inner)
+        registered[name] = _maybe_resilient(inner, settings)
+    router = ModelRouter(providers=registered, policy=policy)
+    return router, tuple(inners)
 
 
 # --- Search provider selection (ADR 0032) -----------------------------------
@@ -287,7 +307,7 @@ def build_research_deps(settings: Settings | None = None) -> ResearchBundle:
     surfaces as a loud `CompositionError` — see the module docstring.
     """
     resolved = settings or get_settings()
-    router, model_provider = _build_router(resolved)
+    router, model_providers = _build_router(resolved)
     search = _build_search_provider(resolved)
     fetch = HttpxFetchProvider()
     deps = ResearchDeps(
@@ -306,7 +326,7 @@ def build_research_deps(settings: Settings | None = None) -> ResearchBundle:
     # The `ModelProvider`/`SearchProvider` protocols don't declare `aclose` (the
     # fakes have no client to close), so narrow to `AsyncClosable` for the bundle.
     closables: tuple[AsyncClosable, ...] = (
-        cast(AsyncClosable, model_provider),
+        *(cast(AsyncClosable, p) for p in model_providers),
         cast(AsyncClosable, search),
         fetch,
     )
@@ -495,8 +515,8 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
         return path.resolve().as_uri()
 
     closables: list[AsyncClosable] = []
-    model_router, model_provider = _build_router(resolved)
-    closables.append(cast(AsyncClosable, model_provider))
+    model_router, model_providers = _build_router(resolved)
+    closables.extend(cast(AsyncClosable, p) for p in model_providers)
     tts = _build_tts_provider(
         resolved,
         model_router=model_router,

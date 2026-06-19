@@ -24,9 +24,9 @@ class _Out(BaseModel):
     n: int
 
 
-def _provider(handler: Any) -> OpenAICompatibleProvider:
+def _provider(handler: Any, **kwargs: Any) -> OpenAICompatibleProvider:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return OpenAICompatibleProvider(base_url="https://x/v1", api_key="k", client=client)
+    return OpenAICompatibleProvider(base_url="https://x/v1", api_key="k", client=client, **kwargs)
 
 
 def _resp(content: str) -> httpx.Response:
@@ -57,6 +57,22 @@ def test_builds_request_and_maps_response() -> None:
     # The caller's JSON Schema is injected into the system message.
     assert "JSON" in seen["body"]["messages"][0]["content"]
     assert seen["body"]["messages"][1] == {"role": "user", "content": "p"}
+
+
+def test_schema_format_sends_json_schema_response_format() -> None:
+    # use_schema_format=True constrains the backend to the caller's schema (#113).
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return _resp('{"value": "ok", "n": 1}')
+
+    _complete(_provider(handler, use_schema_format=True))
+    rf = seen["body"]["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "_Out"
+    # The actual schema is sent (constrains generation), not just "an object".
+    assert "value" in rf["json_schema"]["schema"]["properties"]
 
 
 def test_strips_prose_and_fences() -> None:
