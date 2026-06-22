@@ -242,6 +242,25 @@ def test_render_returns_descriptor_and_records_call(tmp_path: Path) -> None:
     assert service.calls[0].visual_uris == ["/tmp/bg.png"]
 
 
+def test_render_relative_output_dir_yields_absolute_file_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A relative output dir (the default "renders") must still produce a valid
+    # absolute file:// URI — as_uri() rejects relative paths (#122).
+    monkeypatch.chdir(tmp_path)
+    service = FfmpegCompositionService(output_dir="renders")  # relative!
+    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+        video = asyncio.run(
+            service.render(
+                audio=_audio(uri="/tmp/a.wav"),
+                captions=_captions(),
+                visual_uris=["/tmp/bg.png"],
+            )
+        )
+    assert video.video_uri.startswith("file:///")  # absolute, not a relative URI
+    assert video.video_uri.endswith(".mp4")
+
+
 def test_render_feeds_srt_to_ffmpeg_then_cleans_it_up(tmp_path: Path) -> None:
     """The captions reach ffmpeg via a transient .srt that the render removes.
 

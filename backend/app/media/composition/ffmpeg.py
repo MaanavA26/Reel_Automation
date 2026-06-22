@@ -337,7 +337,9 @@ class FfmpegCompositionService:
 
         return RenderedVideo(
             id=output_id,
-            video_uri=output_path.as_uri(),
+            # resolve() so a relative output dir (e.g. "renders") still yields a
+            # valid absolute file:// URI — as_uri() rejects relative paths (#122).
+            video_uri=output_path.resolve().as_uri(),
             duration_ms=audio.duration_ms,  # video is as long as its narration
             width=width,
             height=height,
