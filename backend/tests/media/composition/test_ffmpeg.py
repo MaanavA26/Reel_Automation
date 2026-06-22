@@ -153,6 +153,37 @@ def test_build_subtitles_path_is_escaped() -> None:
     assert r"subtitles='/tmp/sub\:dir/out.srt'" in fc
 
 
+def test_build_soft_subtitles_mux_when_libass_absent() -> None:
+    # burn_in_captions=False (no libass): no subtitles filter; the .srt is a muxed
+    # input mapped as a soft mov_text track instead (issue #116).
+    args = build_ffmpeg_args(
+        audio_path=Path("/tmp/a.wav"),
+        visual_paths=[Path("/tmp/bg.png")],
+        subtitles_path=Path("/tmp/out.srt"),
+        output_path=Path("/tmp/out.mp4"),
+        duration_ms=4200,
+        width=1080,
+        height=1920,
+        burn_in_captions=False,
+    )
+    fc = args[args.index("-filter_complex") + 1]
+    assert "subtitles=" not in fc  # NOT burned in
+    assert "[v0]" in fc  # single-visual scale label is the video output
+    # Three inputs now: visual, audio, and the .srt; the srt is a soft mov_text track.
+    assert args.count("-i") == 3
+    assert "/tmp/out.srt" in args
+    assert ["-c:s", "mov_text"] == args[args.index("-c:s") : args.index("-c:s") + 2]
+    assert "2:s" in args  # subtitle stream mapped from the srt input (index 2)
+    assert ["-map", "[v0]"] == args[args.index("[v0]") - 1 : args.index("[v0]") + 1]
+
+
+def test_subtitles_filter_available_returns_bool() -> None:
+    # Pure capability probe — returns False (never raises) when ffmpeg is absent.
+    from app.media.composition.ffmpeg import subtitles_filter_available
+
+    assert isinstance(subtitles_filter_available("definitely-not-a-real-ffmpeg-binary"), bool)
+
+
 def test_build_rejects_no_visuals() -> None:
     with pytest.raises(CompositionError, match="at least one visual"):
         build_ffmpeg_args(
