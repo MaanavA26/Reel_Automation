@@ -17,6 +17,9 @@ backend/*.egg-info/
 renders/
 backend/renders/
 
+# Per-run structured artifact + log sink output (FileRunArtifactSink, ADR 0057).
+backend/runs/
+
 .env
 .env.*
 !.env.example
