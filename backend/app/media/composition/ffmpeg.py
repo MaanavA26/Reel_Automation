@@ -170,10 +170,13 @@ def build_ffmpeg_args(
     )
 
     args: list[str] = ["ffmpeg", "-y"]
-    # Loop each still image so it has a stream, bounded to its equal slice by -t;
-    # -loop 1 keeps a single-frame image from ending immediately.
+    # Visuals are short *video* clips (stock B-roll / generative), not stills, so
+    # loop the whole input (`-stream_loop -1`) to fill its slice and cap the read
+    # at the slice with `-t`. (`-loop 1` is an image2-demuxer option and fails on
+    # a video input — "Option loop not found"; issue #119.) `-stream_loop`/`-t`
+    # are input options, so they precede each `-i`.
     for path in visual_paths:
-        args += ["-loop", "1", "-t", per_visual_s, "-i", str(path)]
+        args += ["-stream_loop", "-1", "-t", per_visual_s, "-i", str(path)]
     # The narration audio is the last input.
     args += ["-i", str(audio_path)]
     audio_index = len(visual_paths)

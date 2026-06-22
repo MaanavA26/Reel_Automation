@@ -87,11 +87,12 @@ def test_build_single_visual_argv_tokens() -> None:
     args = _build_single()
     assert args[0] == "ffmpeg"
     assert "-y" in args
-    # Audio is the last input, the still image is looped+bounded.
+    # Audio is the last input; the video clip is stream-looped + bounded to its slot.
     assert args.count("-i") == 2
     assert "/tmp/a.wav" in args
     assert "/tmp/bg.png" in args
-    assert ["-loop", "1"] == args[args.index("-loop") : args.index("-loop") + 2]
+    sl = args.index("-stream_loop")
+    assert ["-stream_loop", "-1"] == args[sl : sl + 2]
     # Duration in seconds appears for -t (4200ms -> 4.200s).
     assert "4.200" in args
     # Output path is last.
