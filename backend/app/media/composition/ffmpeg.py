@@ -32,14 +32,18 @@ argv-construction and subprocess-failure paths are fully hermetic.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shlex
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from app.media.composition.base import RecordedRender
 from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech, _gen_id
 from app.media.subtitles.base import format_srt
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "ffmpeg"
 
@@ -83,6 +87,38 @@ def resolve_local_path(uri: str) -> Path:
     )
 
 
+@lru_cache(maxsize=8)
+def subtitles_filter_available(ffmpeg_bin: str = "ffmpeg") -> bool:
+    """Whether this ffmpeg build has the ``subtitles`` filter (requires libass).
+
+    Burned-in captions go through the ``subtitles`` filter, which is only
+    compiled in when ffmpeg is built ``--enable-libass``. Some builds (e.g. the
+    current Homebrew bottle, issue #116) omit it — without this check the render
+    fails cryptically ("No option name near ...") deep in the filtergraph. Cached
+    (the binary's capabilities don't change within a process); failure to probe
+    is treated as "unavailable" so we degrade rather than crash.
+    """
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-filters"],
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    if result.returncode != 0:
+        return False
+    # `ffmpeg -filters` rows are: <flags> <name> <pads> <description>. Match the
+    # NAME column (token[1]) exactly, so a filter whose *description* merely
+    # mentions "subtitles" (e.g. the `ass` filter) is not a false positive.
+    for raw in result.stdout.splitlines():
+        parts = raw.split()
+        if len(parts) >= 2 and parts[1] == b"subtitles":
+            return True
+    return False
+
+
 def build_ffmpeg_args(
     *,
     audio_path: Path,
@@ -92,8 +128,16 @@ def build_ffmpeg_args(
     duration_ms: int,
     width: int,
     height: int,
+    burn_in_captions: bool = True,
 ) -> list[str]:
     """Build the ffmpeg argv to assemble a vertical short-form video. Pure.
+
+    Captions: when ``burn_in_captions`` (the default, the engagement-quality path
+    for short-form), they are burned into the video via the ``subtitles`` filter
+    (needs an ffmpeg built with libass). When ``False``, the ``.srt`` is muxed as
+    a soft ``mov_text`` track instead — a graceful fallback for ffmpeg builds
+    without libass so the render still produces a valid MP4 (issue #116). The
+    caller passes the result of `subtitles_filter_available`.
 
     Deterministic: given the same resolved paths and dimensions it returns the
     same argv, every token explicit and assertable — it creates no temp files
@@ -142,6 +186,12 @@ def build_ffmpeg_args(
     # The narration audio is the last input.
     args += ["-i", str(audio_path)]
     audio_index = len(visual_paths)
+    # Soft-subtitle path only: add the .srt as a muxed input (no filter). Placed
+    # after the audio input so the audio index is unaffected.
+    subtitles_index: int | None = None
+    if not burn_in_captions:
+        args += ["-i", str(subtitles_path)]
+        subtitles_index = audio_index + 1
 
     # Build the video filtergraph: scale+pad every visual; concat if >1.
     filter_parts = [f"[{i}:v]{scale_pad}[v{i}]" for i in range(len(visual_paths))]
@@ -152,19 +202,37 @@ def build_ffmpeg_args(
         filter_parts.append(f"{concat_inputs}concat=n={len(visual_paths)}:v=1:a=0[vcat]")
         video_label = "[vcat]"
 
-    # Burn the captions into the video stream via the subtitles filter. The
-    # filename is escaped for the filtergraph mini-language (':' and '\' are
-    # special inside a filter argument).
-    escaped_subs = str(subtitles_path).replace("\\", "\\\\").replace(":", r"\:")
-    filter_parts.append(f"{video_label}subtitles='{escaped_subs}'[vout]")
+    if burn_in_captions:
+        # Burn the captions into the video stream via the subtitles filter. The
+        # filename is escaped for the filtergraph mini-language (':' and '\' are
+        # special inside a filter argument).
+        # Escape for the filtergraph mini-language: backslash + colon are special,
+        # and a single quote must use the close-escape-open pattern ('\'') because
+        # ffmpeg does not backslash-escape quotes inside a single-quoted value
+        # (CodeRabbit #117). Order matters: double backslashes first, then colon,
+        # then quotes (whose introduced backslash must not be re-doubled).
+        escaped_subs = (
+            str(subtitles_path).replace("\\", "\\\\").replace(":", r"\:").replace("'", r"'\''")
+        )
+        filter_parts.append(f"{video_label}subtitles='{escaped_subs}'[vout]")
+        video_out = "[vout]"
+    else:
+        # No subtitles filter (libass absent): the scaled/concatenated video is
+        # the output; captions are muxed as a soft track below.
+        video_out = video_label
 
     args += [
         "-filter_complex",
         ";".join(filter_parts),
         "-map",
-        "[vout]",
+        video_out,
         "-map",
         f"{audio_index}:a",
+    ]
+    if not burn_in_captions:
+        # Mux the .srt as a soft mov_text subtitle track (MP4-compatible).
+        args += ["-map", f"{subtitles_index}:s", "-c:s", "mov_text"]
+    args += [
         # Encode settings: H.264 video + AAC audio in an MP4 — the short-form
         # publishing baseline. yuv420p keeps the output broadly playable.
         "-c:v",
@@ -255,6 +323,18 @@ class FfmpegCompositionService:
         try:
             subtitles_path.write_text(format_srt(captions), encoding="utf-8")
 
+            # Burn captions in when this ffmpeg can (libass); otherwise degrade to
+            # a soft mov_text track so the render still succeeds (issue #116).
+            # Probe off the event loop — the subprocess can block up to its
+            # timeout on a cold cache (CodeRabbit #117).
+            burn_in = await asyncio.to_thread(subtitles_filter_available)
+            if not burn_in:
+                logger.warning(
+                    "composition: ffmpeg lacks the 'subtitles' filter (no libass) — "
+                    "muxing captions as a soft mov_text track instead of burning them "
+                    "in. Install an ffmpeg built with libass for burned-in captions."
+                )
+
             args = build_ffmpeg_args(
                 audio_path=audio_path,
                 visual_paths=visual_paths,
@@ -263,6 +343,7 @@ class FfmpegCompositionService:
                 duration_ms=audio.duration_ms,
                 width=width,
                 height=height,
+                burn_in_captions=burn_in,
             )
 
             await asyncio.to_thread(self._run, args)
