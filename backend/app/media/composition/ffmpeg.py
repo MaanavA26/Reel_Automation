@@ -107,7 +107,16 @@ def subtitles_filter_available(ffmpeg_bin: str = "ffmpeg") -> bool:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
-    return b"subtitles" in result.stdout
+    if result.returncode != 0:
+        return False
+    # `ffmpeg -filters` rows are: <flags> <name> <pads> <description>. Match the
+    # NAME column (token[1]) exactly, so a filter whose *description* merely
+    # mentions "subtitles" (e.g. the `ass` filter) is not a false positive.
+    for raw in result.stdout.splitlines():
+        parts = raw.split()
+        if len(parts) >= 2 and parts[1] == b"subtitles":
+            return True
+    return False
 
 
 def build_ffmpeg_args(
@@ -197,7 +206,14 @@ def build_ffmpeg_args(
         # Burn the captions into the video stream via the subtitles filter. The
         # filename is escaped for the filtergraph mini-language (':' and '\' are
         # special inside a filter argument).
-        escaped_subs = str(subtitles_path).replace("\\", "\\\\").replace(":", r"\:")
+        # Escape for the filtergraph mini-language: backslash + colon are special,
+        # and a single quote must use the close-escape-open pattern ('\'') because
+        # ffmpeg does not backslash-escape quotes inside a single-quoted value
+        # (CodeRabbit #117). Order matters: double backslashes first, then colon,
+        # then quotes (whose introduced backslash must not be re-doubled).
+        escaped_subs = (
+            str(subtitles_path).replace("\\", "\\\\").replace(":", r"\:").replace("'", r"'\''")
+        )
         filter_parts.append(f"{video_label}subtitles='{escaped_subs}'[vout]")
         video_out = "[vout]"
     else:
@@ -309,7 +325,9 @@ class FfmpegCompositionService:
 
             # Burn captions in when this ffmpeg can (libass); otherwise degrade to
             # a soft mov_text track so the render still succeeds (issue #116).
-            burn_in = subtitles_filter_available()
+            # Probe off the event loop — the subprocess can block up to its
+            # timeout on a cold cache (CodeRabbit #117).
+            burn_in = await asyncio.to_thread(subtitles_filter_available)
             if not burn_in:
                 logger.warning(
                     "composition: ffmpeg lacks the 'subtitles' filter (no libass) — "

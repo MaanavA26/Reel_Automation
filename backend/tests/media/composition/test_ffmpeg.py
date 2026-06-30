@@ -153,6 +153,22 @@ def test_build_subtitles_path_is_escaped() -> None:
     assert r"subtitles='/tmp/sub\:dir/out.srt'" in fc
 
 
+def test_build_subtitles_single_quote_is_escaped() -> None:
+    # A single quote in the path must use the close-escape-open pattern '\'' so it
+    # doesn't break the single-quoted filter value (CodeRabbit #117, Critical).
+    args = build_ffmpeg_args(
+        audio_path=Path("/tmp/a.wav"),
+        visual_paths=[Path("/tmp/bg.png")],
+        subtitles_path=Path("/tmp/o'x/out.srt"),
+        output_path=Path("/tmp/out.mp4"),
+        duration_ms=1000,
+        width=1080,
+        height=1920,
+    )
+    fc = args[args.index("-filter_complex") + 1]
+    assert r"o'\''x" in fc
+
+
 def test_build_soft_subtitles_mux_when_libass_absent() -> None:
     # burn_in_captions=False (no libass): no subtitles filter; the .srt is a muxed
     # input mapped as a soft mov_text track instead (issue #116).
@@ -177,11 +193,33 @@ def test_build_soft_subtitles_mux_when_libass_absent() -> None:
     assert ["-map", "[v0]"] == args[args.index("[v0]") - 1 : args.index("[v0]") + 1]
 
 
-def test_subtitles_filter_available_returns_bool() -> None:
-    # Pure capability probe — returns False (never raises) when ffmpeg is absent.
+def test_subtitles_filter_available_parses_name_column() -> None:
+    # Match the NAME column exactly: a row whose *description* mentions
+    # "subtitles" (the `ass` filter) must NOT be a false positive (CodeRabbit #117).
     from app.media.composition.ffmpeg import subtitles_filter_available
 
-    assert isinstance(subtitles_filter_available("definitely-not-a-real-ffmpeg-binary"), bool)
+    present = b" T.. subtitles        V->V       Render text subtitles onto input video.\n"
+    # `ass` row mentions "subtitles" only in its description; `scale` is unrelated.
+    absent = (
+        b" T.. ass              V->V       Render ASS subtitles onto input video.\n"
+        b" ..C scale            V->V       Scale the input video.\n"
+    )
+    with patch("app.media.composition.ffmpeg.subprocess.run") as m:
+        subtitles_filter_available.cache_clear()
+        m.return_value = subprocess.CompletedProcess([], 0, present, b"")
+        assert subtitles_filter_available("ffmpeg-a") is True
+
+        subtitles_filter_available.cache_clear()
+        m.return_value = subprocess.CompletedProcess([], 0, absent, b"")
+        assert subtitles_filter_available("ffmpeg-b") is False  # desc-mention is not a match
+
+        subtitles_filter_available.cache_clear()
+        m.return_value = subprocess.CompletedProcess([], 1, present, b"")
+        assert subtitles_filter_available("ffmpeg-c") is False  # nonzero exit -> unavailable
+
+    # Missing binary -> False, never raises.
+    subtitles_filter_available.cache_clear()
+    assert subtitles_filter_available("definitely-not-a-real-ffmpeg-binary") is False
 
 
 def test_build_rejects_no_visuals() -> None:
