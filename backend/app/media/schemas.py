@@ -110,3 +110,40 @@ class RenderedVideo(BaseModel):
     height: int = Field(gt=0)
     produced_via: str
     edit_list: list[tuple[int, int]] = Field(default_factory=list)
+
+
+class CaptionStyle(BaseModel):
+    """Brand styling for burned-in captions, consumed by `format_ass` (ADR 0059).
+
+    A strict (`extra="forbid"`) value object carrying the visual parameters of a
+    single ASS ``[V4+ Styles]`` row plus a per-cue fade. Colours are stored as
+    ``#RRGGBB`` hex (the format a designer/brand kit speaks) and converted to
+    ASS's inverted ``&HAABBGGRR`` form by the formatter — never stored in the
+    wire format. Defaults are the project's caption brand: a bold sans face,
+    large for mobile legibility, white fill with a heavy dark outline, a short
+    symmetric fade, and a 10% left/right safe-margin so text never kisses the
+    frame edge.
+
+    This object describes **cue-level** styling only: a single fade per cue. It
+    does NOT model word-level karaoke ("animated captions"); that is a separate
+    future step (ADR 0059 §D2).
+    """
+
+    model_config = _STRICT
+
+    font_name: str = "Arial"
+    font_size: int = Field(default=72, gt=0)
+    # #RRGGBB hex; converted to ASS &HAABBGGRR by format_ass.
+    primary_colour: str = "#FFFFFF"
+    outline_colour: str = "#000000"
+    outline_width: float = Field(default=3.0, ge=0)
+    fade_in_ms: int = Field(default=120, ge=0)
+    fade_out_ms: int = Field(default=120, ge=0)
+    # Left/right safe-area inset as a fraction of frame width (0.10 = 10%).
+    margin_fraction: float = Field(default=0.10, ge=0, lt=0.5)
+
+
+# Module-level default so callers can take a `CaptionStyle` parameter without a
+# function-call-in-default-argument (ruff B008) and so the Protocol / ffmpeg /
+# fake render signatures share one canonical default object (ADR 0059).
+DEFAULT_CAPTION_STYLE = CaptionStyle()

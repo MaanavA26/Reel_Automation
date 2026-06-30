@@ -18,7 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech
+from app.media.schemas import (
+    DEFAULT_CAPTION_STYLE,
+    CaptionStyle,
+    CaptionTrack,
+    RenderedVideo,
+    SynthesizedSpeech,
+)
 
 
 @runtime_checkable
@@ -26,8 +32,9 @@ class CompositionService(Protocol):
     """A backend that renders assets into a single video.
 
     `visual_uris` are the ordered background/B-roll/image assets the renderer
-    lays under the narration and captions. The concrete ffmpeg adapter is
-    deferred (ADR 0019).
+    lays under the narration and captions. `caption_style` styles burned-in
+    captions (ADR 0059); it has a default so existing callers are unaffected. The
+    concrete ffmpeg adapter is deferred (ADR 0019).
     """
 
     name: str
@@ -40,6 +47,7 @@ class CompositionService(Protocol):
         visual_uris: list[str],
         width: int = 1080,
         height: int = 1920,
+        caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     ) -> RenderedVideo: ...
 
 
@@ -76,6 +84,7 @@ class FakeCompositionService:
         visual_uris: list[str],
         width: int = 1080,
         height: int = 1920,
+        caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     ) -> RenderedVideo:
         self.calls.append(
             RecordedRender(

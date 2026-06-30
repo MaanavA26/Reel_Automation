@@ -59,8 +59,15 @@ from app.media.composition.loudness import (
     build_loudnorm_measure_args,
     parse_loudnorm_stats,
 )
-from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech, _gen_id
-from app.media.subtitles.base import format_srt
+from app.media.schemas import (
+    DEFAULT_CAPTION_STYLE,
+    CaptionStyle,
+    CaptionTrack,
+    RenderedVideo,
+    SynthesizedSpeech,
+    _gen_id,
+)
+from app.media.subtitles.base import format_ass, format_srt
 
 logger = logging.getLogger(__name__)
 
@@ -359,13 +366,21 @@ class FfmpegCompositionService:
         visual_uris: list[str],
         width: int = 1080,
         height: int = 1920,
+        caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     ) -> RenderedVideo:
         """Assemble ``audio`` + ``captions`` + ``visuals`` into one MP4.
 
         Resolves the asset URIs to local paths, writes the caption track to a
-        temp ``.srt``, builds the argv via the pure builder, and runs ffmpeg off
-        the event loop. Returns a `RenderedVideo` whose ``duration_ms`` mirrors
-        the narration audio. Raises `CompositionError` on any failure.
+        transient subtitle file, builds the argv via the pure builder, and runs
+        ffmpeg off the event loop. Returns a `RenderedVideo` whose ``duration_ms``
+        mirrors the narration audio. Raises `CompositionError` on any failure.
+
+        Caption file format depends on the path taken (ADR 0059): on the burn-in
+        path (libass present) it writes a styled ``.ass`` via `format_ass` so the
+        captions carry the brand font/colour/outline/fade; on the soft-mux
+        fallback (no libass) it writes a plain ``.srt`` via `format_srt`, because
+        the ``mov_text`` muxed-subtitle codec cannot carry ASS styling. The
+        transient file is removed in `finally` regardless of extension.
         """
         self.calls.append(
             RecordedRender(
@@ -389,28 +404,37 @@ class FfmpegCompositionService:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self._output_dir / f"{output_id}.mp4"
 
-        # The caption track is structured cues; ffmpeg's subtitles filter needs a
-        # file, so render it to a transient .srt next to the output and feed that
-        # path to ffmpeg. format_srt is the in-layer reuse (no reimplementation of
-        # timestamp formatting). The .srt is purely an implementation detail of the
-        # render, not a published artifact, so it is removed in the `finally` below:
-        # a successful render leaves only the .mp4, and a failed one cleans up its
-        # temp rather than littering `output_dir`.
-        subtitles_path = self._output_dir / f"{output_id}.srt"
+        # The caption track is structured cues; ffmpeg needs a file. Which file
+        # depends on the path: probe libass *first*, then write a styled .ass
+        # (burn-in) or a plain .srt (soft mov_text mux) — mov_text cannot carry
+        # ASS, so the fallback stays SRT (ADR 0059). format_ass / format_srt are
+        # the in-layer reuse (no reimplementation of timestamp formatting). The
+        # transient subtitle file is purely an implementation detail of the
+        # render, not a published artifact, so it is removed in the `finally`
+        # below regardless of extension: a successful render leaves only the .mp4,
+        # and a failed one cleans up its temp rather than littering `output_dir`.
+        subtitles_path: Path | None = None
         try:
-            subtitles_path.write_text(format_srt(captions), encoding="utf-8")
-
             # Burn captions in when this ffmpeg can (libass); otherwise degrade to
             # a soft mov_text track so the render still succeeds (issue #116).
             # Probe off the event loop — the subprocess can block up to its
-            # timeout on a cold cache (CodeRabbit #117).
+            # timeout on a cold cache (CodeRabbit #117). Probe before writing so
+            # the right subtitle format lands on disk.
             burn_in = await asyncio.to_thread(subtitles_filter_available)
-            if not burn_in:
+            if burn_in:
+                subtitles_path = self._output_dir / f"{output_id}.ass"
+                subtitles_path.write_text(
+                    format_ass(captions, style=caption_style, width=width, height=height),
+                    encoding="utf-8",
+                )
+            else:
                 logger.warning(
                     "composition: ffmpeg lacks the 'subtitles' filter (no libass) — "
                     "muxing captions as a soft mov_text track instead of burning them "
-                    "in. Install an ffmpeg built with libass for burned-in captions."
+                    "in. Install an ffmpeg built with libass for styled burned-in captions."
                 )
+                subtitles_path = self._output_dir / f"{output_id}.srt"
+                subtitles_path.write_text(format_srt(captions), encoding="utf-8")
 
             # First (analysis) pass: measure the narration's loudness off the
             # event loop via the same subprocess seam, so the second pass the
@@ -432,7 +456,8 @@ class FfmpegCompositionService:
 
             await asyncio.to_thread(self._run, args)
         finally:
-            subtitles_path.unlink(missing_ok=True)
+            if subtitles_path is not None:
+                subtitles_path.unlink(missing_ok=True)
 
         return RenderedVideo(
             id=output_id,
