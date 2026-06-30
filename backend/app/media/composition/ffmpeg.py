@@ -24,6 +24,16 @@ The video's `duration_ms` mirrors the narration audio (the canonical
 "video is as long as its narration" rule the fake documents) — we do **not**
 probe the output with a second binary, keeping the result deterministic.
 
+Audio mastering (ADR 0058): the narration is normalized to the platform-
+competitive loudness target with ffmpeg's **two-pass** ``loudnorm`` before it is
+muxed (a raw TTS clip lands ~8 LU too quiet). The analysis pass runs in
+`render` via the same `_run` seam (off the event loop) and its measured stats
+feed the second pass that `build_ffmpeg_args` emits — the pure builder stays
+pure (it takes the already-measured `LoudnessStats`, runs no subprocess). The
+loudness primitives (target constants, measure-pass argv, parser, stats model)
+live in `app.media.composition.loudness`, the single source the QC gate
+(issue #126) reuses.
+
 Real rendering requires the binary and is covered by a
 `@pytest.mark.integration` test that skips when `ffmpeg` is absent; the
 argv-construction and subprocess-failure paths are fully hermetic.
@@ -40,6 +50,15 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from app.media.composition.base import RecordedRender
+from app.media.composition.loudness import (
+    OUTPUT_SAMPLE_RATE,
+    TARGET_I,
+    TARGET_LRA,
+    TARGET_TP,
+    LoudnessStats,
+    build_loudnorm_measure_args,
+    parse_loudnorm_stats,
+)
 from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech, _gen_id
 from app.media.subtitles.base import format_srt
 
@@ -128,6 +147,7 @@ def build_ffmpeg_args(
     duration_ms: int,
     width: int,
     height: int,
+    loudness: LoudnessStats,
     burn_in_captions: bool = True,
 ) -> list[str]:
     """Build the ffmpeg argv to assemble a vertical short-form video. Pure.
@@ -156,6 +176,13 @@ def build_ffmpeg_args(
 
     `duration_ms` is the narration length in milliseconds; ffmpeg's ``-t`` wants
     seconds, so it is divided (kept exact to 3 decimals).
+
+    Audio mastering (ADR 0058): the narration is routed through ``loudnorm`` (the
+    second, *linear* pass — `loudness` carries the first pass's measured stats)
+    then ``aresample`` to the publishing sample rate, producing an ``[aout]``
+    label in the same filtergraph; the audio map is ``-map [aout]`` and the
+    output sample rate is pinned with ``-ar``. The measurement is computed by the
+    caller (`render`) and supplied here, so this builder stays pure.
     """
     if not visual_paths:
         raise CompositionError("at least one visual is required to render a video")
@@ -224,13 +251,31 @@ def build_ffmpeg_args(
         # the output; captions are muxed as a soft track below.
         video_out = video_label
 
+    # Audio mastering chain (ADR 0058), in the same complex graph so its [aout]
+    # label is mappable: the second (linear) loudnorm pass, fed the first pass's
+    # measured stats, then aresample to the publishing sample rate. linear=true
+    # makes the normalization a single fixed gain to the target rather than a
+    # dynamic correction. Floats are formatted to a fixed precision so the argv
+    # stays deterministic and assertable. The map below uses [aout], shared by
+    # both the burn-in and soft-mux branches.
+    loudnorm_chain = (
+        f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}"
+        f":measured_I={loudness.input_i:.2f}"
+        f":measured_TP={loudness.input_tp:.2f}"
+        f":measured_LRA={loudness.input_lra:.2f}"
+        f":measured_thresh={loudness.input_thresh:.2f}"
+        f":offset={loudness.target_offset:.2f}"
+        ":linear=true"
+    )
+    filter_parts.append(f"[{audio_index}:a]{loudnorm_chain},aresample={OUTPUT_SAMPLE_RATE}[aout]")
+
     args += [
         "-filter_complex",
         ";".join(filter_parts),
         "-map",
         video_out,
         "-map",
-        f"{audio_index}:a",
+        "[aout]",
     ]
     if not burn_in_captions:
         # Mux the .srt as a soft mov_text subtitle track (MP4-compatible).
@@ -244,6 +289,10 @@ def build_ffmpeg_args(
         "yuv420p",
         "-c:a",
         "aac",
+        # Pin the output sample rate to the publishing baseline (ADR 0058); the
+        # aresample in the audio chain has already converted to it.
+        "-ar",
+        str(OUTPUT_SAMPLE_RATE),
         # Audio is the master clock: cap the whole output at the narration length
         # and stop when the shortest mapped stream ends.
         "-t",
@@ -338,6 +387,12 @@ class FfmpegCompositionService:
                     "in. Install an ffmpeg built with libass for burned-in captions."
                 )
 
+            # First (analysis) pass: measure the narration's loudness off the
+            # event loop via the same subprocess seam, so the second pass the
+            # builder emits can normalize linearly to the target (ADR 0058). The
+            # pure builder stays pure; the measurement is execution-side.
+            loudness = await asyncio.to_thread(self._measure_loudness, audio_path)
+
             args = build_ffmpeg_args(
                 audio_path=audio_path,
                 visual_paths=visual_paths,
@@ -346,6 +401,7 @@ class FfmpegCompositionService:
                 duration_ms=audio.duration_ms,
                 width=width,
                 height=height,
+                loudness=loudness,
                 burn_in_captions=burn_in,
             )
 
@@ -363,6 +419,25 @@ class FfmpegCompositionService:
             height=height,
             produced_via=f"composition:{self.name}",
         )
+
+    def _measure_loudness(self, audio_path: Path) -> LoudnessStats:
+        """Run the loudness analysis pass and parse its stats (ADR 0058).
+
+        The execution side of the two-pass master: it builds the pure measure
+        argv, runs it through the shared `_run` subprocess seam (so a missing
+        binary / non-zero exit normalize to `CompositionError` like any render),
+        and parses the JSON ffmpeg prints on **stderr**. A malformed/absent
+        analysis surfaces as `CompositionError` rather than a silently-wrong
+        normalization — the second pass depends on every measured field.
+        """
+        result = self._run(build_loudnorm_measure_args(str(audio_path)))
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        try:
+            return parse_loudnorm_stats(stderr_text)
+        except ValueError as exc:
+            raise CompositionError(
+                f"could not parse loudnorm analysis for {audio_path}: {exc}"
+            ) from exc
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[bytes]:
         """Execute the ffmpeg argv; normalize failures to `CompositionError`.

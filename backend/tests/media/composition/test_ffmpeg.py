@@ -23,7 +23,15 @@ from app.media.composition.ffmpeg import (
     build_ffmpeg_args,
     resolve_local_path,
 )
+from app.media.composition.loudness import LoudnessStats
 from app.media.schemas import Caption, CaptionTrack, RenderedVideo, SynthesizedSpeech
+
+
+def _loudness() -> LoudnessStats:
+    # A realistic too-quiet measurement (the issue's ~-22 LUFS source).
+    return LoudnessStats(
+        input_i=-22.5, input_tp=-3.1, input_lra=7.2, input_thresh=-32.6, target_offset=-0.3
+    )
 
 
 def _audio(uri: str = "file:///tmp/narration.wav", duration_ms: int = 4200) -> SynthesizedSpeech:
@@ -76,6 +84,7 @@ def _build_single() -> list[str]:
         duration_ms=4200,
         width=1080,
         height=1920,
+        loudness=_loudness(),
     )
 
 
@@ -110,6 +119,18 @@ def test_build_single_visual_argv_tokens() -> None:
     assert "libx264" in args
     assert "aac" in args
     assert "yuv420p" in args
+    # Audio mastering (ADR 0058): the second loudnorm pass + aresample define
+    # [aout], the audio is mapped from it, and the sample rate is pinned.
+    assert "loudnorm=I=-14.0:TP=-1.0:LRA=11.0" in fc
+    assert "measured_I=-22.50" in fc  # the first pass's measured stats fed back
+    assert "linear=true" in fc
+    assert "aresample=44100" in fc
+    assert "[aout]" in fc
+    # The audio is mapped from the [aout] filtergraph label (the token "[aout]"
+    # in the argv list — not the filtergraph string — is the -map target).
+    aout_map = args.index("[aout]")
+    assert args[aout_map - 1] == "-map"
+    assert ["-ar", "44100"] == args[args.index("-ar") : args.index("-ar") + 2]
 
 
 def test_build_multi_visual_concats_in_order() -> None:
@@ -121,6 +142,7 @@ def test_build_multi_visual_concats_in_order() -> None:
         duration_ms=9000,
         width=720,
         height=1280,
+        loudness=_loudness(),
     )
     assert args.count("-i") == 4  # 3 visuals + 1 audio
     fc = args[args.index("-filter_complex") + 1]
@@ -129,8 +151,11 @@ def test_build_multi_visual_concats_in_order() -> None:
     # Concat consumes the labels in input order.
     assert "[v0][v1][v2]concat" in fc
     assert "scale=720:1280" in fc
-    # Audio is input index 3 (after the 3 visuals).
-    assert "3:a" in args
+    # Audio is input index 3 (after the 3 visuals): it is mastered in the
+    # filtergraph (from [3:a] into [aout], ADR 0058) and mapped from that label.
+    assert "[3:a]loudnorm" in fc
+    aout_map = args.index("[aout]")
+    assert args[aout_map - 1] == "-map"
     # Each visual gets an equal slice (9000ms / 3 = 3.000s per input) so the
     # concatenated stream sums to the narration length; the final -t caps the
     # whole output at 9.000s. (This distinguishes the correct command from the
@@ -148,6 +173,7 @@ def test_build_subtitles_path_is_escaped() -> None:
         duration_ms=1000,
         width=1080,
         height=1920,
+        loudness=_loudness(),
     )
     fc = args[args.index("-filter_complex") + 1]
     # The ':' inside the subtitles filename is escaped for the filtergraph.
@@ -165,6 +191,7 @@ def test_build_subtitles_single_quote_is_escaped() -> None:
         duration_ms=1000,
         width=1080,
         height=1920,
+        loudness=_loudness(),
     )
     fc = args[args.index("-filter_complex") + 1]
     assert r"o'\''x" in fc
@@ -181,6 +208,7 @@ def test_build_soft_subtitles_mux_when_libass_absent() -> None:
         duration_ms=4200,
         width=1080,
         height=1920,
+        loudness=_loudness(),
         burn_in_captions=False,
     )
     fc = args[args.index("-filter_complex") + 1]
@@ -233,6 +261,7 @@ def test_build_rejects_no_visuals() -> None:
             duration_ms=1000,
             width=1080,
             height=1920,
+            loudness=_loudness(),
         )
 
 
@@ -246,6 +275,7 @@ def test_build_rejects_nonpositive_duration() -> None:
             duration_ms=0,
             width=1080,
             height=1920,
+            loudness=_loudness(),
         )
 
 
@@ -259,9 +289,14 @@ def test_satisfies_protocol() -> None:
 def test_render_returns_descriptor_and_records_call(tmp_path: Path) -> None:
     service = FfmpegCompositionService(output_dir=tmp_path)
     audio = _audio(uri="/tmp/a.wav")
-    with patch.object(
-        service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-    ) as mock_run:
+    # The loudness analysis pass is its own subprocess seam; patch it so this test
+    # exercises only the render call (ADR 0058 — the measure pass is tested apart).
+    with (
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(
+            service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")
+        ) as mock_run,
+    ):
         video = asyncio.run(
             service.render(audio=audio, captions=_captions(), visual_uris=["/tmp/bg.png"])
         )
@@ -287,7 +322,10 @@ def test_render_relative_output_dir_yields_absolute_file_uri(
     # absolute file:// URI — as_uri() rejects relative paths (#122).
     monkeypatch.chdir(tmp_path)
     service = FfmpegCompositionService(output_dir="renders")  # relative!
-    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+    with (
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")),
+    ):
         video = asyncio.run(
             service.render(
                 audio=_audio(uri="/tmp/a.wav"),
@@ -315,7 +353,10 @@ def test_render_feeds_srt_to_ffmpeg_then_cleans_it_up(tmp_path: Path) -> None:
         captured["contents"] = srt_path.read_text(encoding="utf-8")
         return subprocess.CompletedProcess([], 0, b"", b"")
 
-    with patch.object(service, "_run", side_effect=fake_run):
+    with (
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", side_effect=fake_run),
+    ):
         asyncio.run(
             service.render(
                 audio=_audio(uri="/tmp/a.wav"), captions=_captions(), visual_uris=["/tmp/bg.png"]
@@ -346,7 +387,10 @@ def test_render_cleans_up_srt_on_failure(tmp_path: Path) -> None:
 
 def test_render_echoes_requested_dimensions(tmp_path: Path) -> None:
     service = FfmpegCompositionService(output_dir=tmp_path)
-    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+    with (
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")),
+    ):
         video = asyncio.run(
             service.render(
                 audio=_audio(uri="/tmp/a.wav"),
@@ -413,6 +457,48 @@ def test_run_returns_completed_process_on_success() -> None:
         assert service._run(["ffmpeg", "-y"]) is ok
 
 
+# --- _measure_loudness (the analysis-pass execution seam) ------------------
+
+
+_LOUDNORM_STDERR = (
+    b"[Parsed_loudnorm_0 @ 0x600000] \n"
+    b"{\n"
+    b'    "input_i" : "-22.50",\n'
+    b'    "input_tp" : "-3.12",\n'
+    b'    "input_lra" : "7.20",\n'
+    b'    "input_thresh" : "-32.60",\n'
+    b'    "output_i" : "-13.99",\n'
+    b'    "output_tp" : "-1.00",\n'
+    b'    "output_lra" : "6.90",\n'
+    b'    "output_thresh" : "-24.10",\n'
+    b'    "normalization_type" : "dynamic",\n'
+    b'    "target_offset" : "-0.30"\n'
+    b"}\n"
+)
+
+
+def test_measure_loudness_runs_pass_and_parses_stats() -> None:
+    service = FfmpegCompositionService()
+    completed = subprocess.CompletedProcess(["ffmpeg"], 0, b"", _LOUDNORM_STDERR)
+    with patch.object(service, "_run", return_value=completed) as mock_run:
+        stats = service._measure_loudness(Path("/tmp/a.wav"))
+    # The measure-pass argv (analysis mode) reached the subprocess seam.
+    argv = mock_run.call_args.args[0]
+    assert "print_format=json" in " ".join(argv)
+    assert "/tmp/a.wav" in argv
+    # The parsed stats are the source's measured loudness (the too-quiet -22 LUFS).
+    assert stats.input_i == -22.5
+    assert stats.target_offset == -0.3
+
+
+def test_measure_loudness_wraps_unparseable_analysis() -> None:
+    service = FfmpegCompositionService()
+    completed = subprocess.CompletedProcess(["ffmpeg"], 0, b"", b"no json here")
+    with patch.object(service, "_run", return_value=completed):
+        with pytest.raises(CompositionError, match="could not parse loudnorm analysis"):
+            service._measure_loudness(Path("/tmp/a.wav"))
+
+
 # --- integration: real ffmpeg render (skips without the binary) ------------
 
 
@@ -421,12 +507,15 @@ def test_real_ffmpeg_render(tmp_path: Path) -> None:
     """Render a real MP4 with the ffmpeg binary using lavfi-generated inputs.
 
     Skips when ffmpeg is not on PATH. Inputs are synthesized by ffmpeg itself
-    (a color source + silent audio), so no binary fixtures live in the repo.
+    (a color source + a real tone), so no binary fixtures live in the repo. The
+    audio is a 440 Hz **sine**, not silence: the two-pass loudnorm master
+    (ADR 0058) measures the source, and digital silence yields a degenerate
+    ``-inf``/``-70`` analysis that makes pass two misbehave.
     """
     if shutil.which("ffmpeg") is None:
         pytest.skip("ffmpeg binary not on PATH")
 
-    # Generate a 2s 1080x1920 solid-color still and 2s of silence.
+    # Generate a 2s 1080x1920 solid-color still and 2s of a 440 Hz tone.
     image = tmp_path / "bg.png"
     audio = tmp_path / "a.wav"
     subprocess.run(
@@ -445,7 +534,15 @@ def test_real_ffmpeg_render(tmp_path: Path) -> None:
         capture_output=True,
     )
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "2", str(audio)],
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=24000:duration=2",
+            str(audio),
+        ],
         check=True,
         capture_output=True,
     )
@@ -463,3 +560,23 @@ def test_real_ffmpeg_render(tmp_path: Path) -> None:
     assert out.exists() and out.stat().st_size > 0
     assert video.duration_ms == 2000
     assert (video.width, video.height) == (1080, 1920)
+
+    # The mastered audio track is at the publishing sample rate (ADR 0058).
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate",
+            "-of",
+            "default=nw=1:nk=1",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.strip() == "44100"
