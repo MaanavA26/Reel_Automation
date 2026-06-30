@@ -87,11 +87,12 @@ def test_build_single_visual_argv_tokens() -> None:
     args = _build_single()
     assert args[0] == "ffmpeg"
     assert "-y" in args
-    # Audio is the last input, the still image is looped+bounded.
+    # Audio is the last input; the video clip is stream-looped + bounded to its slot.
     assert args.count("-i") == 2
     assert "/tmp/a.wav" in args
     assert "/tmp/bg.png" in args
-    assert ["-loop", "1"] == args[args.index("-loop") : args.index("-loop") + 2]
+    sl = args.index("-stream_loop")
+    assert ["-stream_loop", "-1"] == args[sl : sl + 2]
     # Duration in seconds appears for -t (4200ms -> 4.200s).
     assert "4.200" in args
     # Output path is last.
@@ -277,6 +278,25 @@ def test_render_returns_descriptor_and_records_call(tmp_path: Path) -> None:
     # Call captured for assertions (mirrors the fake).
     assert service.calls[0].audio_id == audio.id
     assert service.calls[0].visual_uris == ["/tmp/bg.png"]
+
+
+def test_render_relative_output_dir_yields_absolute_file_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A relative output dir (the default "renders") must still produce a valid
+    # absolute file:// URI — as_uri() rejects relative paths (#122).
+    monkeypatch.chdir(tmp_path)
+    service = FfmpegCompositionService(output_dir="renders")  # relative!
+    with patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+        video = asyncio.run(
+            service.render(
+                audio=_audio(uri="/tmp/a.wav"),
+                captions=_captions(),
+                visual_uris=["/tmp/bg.png"],
+            )
+        )
+    assert video.video_uri.startswith("file:///")  # absolute, not a relative URI
+    assert video.video_uri.endswith(".mp4")
 
 
 def test_render_feeds_srt_to_ffmpeg_then_cleans_it_up(tmp_path: Path) -> None:
