@@ -109,11 +109,60 @@ def test_router_registers_provider_under_config_name_so_policy_resolves() -> Non
     # policy keys roles by 'groq'. Registering under the config name is what makes
     # role resolution succeed (a registry-name policy against an adapter-name key
     # would raise UnknownProviderError).
-    router, _provider = _build_router(
+    router, _providers = _build_router(
         _settings(default_provider="groq", groq_api_key=SecretStr("gsk-test"))
     )
     bound = router.for_role(ModelRole.PLANNING)  # must not raise
     assert bound.provider_name == "openai-compatible"  # the adapter's own name
+
+
+# --- Multi-provider, capability-tiered fabric (#113) -------------------------
+
+
+def _tiered_settings(**overrides: object) -> Settings:
+    # Bulk (extraction) on a local ollama 3B; judgment roles on cloud nvidia 70B.
+    base: dict[str, object] = {
+        "default_provider": "ollama",
+        "extraction_provider": "ollama",
+        "planning_provider": "nvidia",
+        "long_context_provider": "nvidia",
+        "fallback_provider": "nvidia",
+        "nvidia_api_key": SecretStr("nv-test"),  # ollama needs no key
+        "extraction_model": "qwen2.5:3b",
+        "planning_model": "meta/llama-3.3-70b-instruct",
+        "long_context_model": "meta/llama-3.3-70b-instruct",
+        "fallback_model": "meta/llama-3.3-70b-instruct",
+    }
+    base.update(overrides)
+    return _settings(**base)
+
+
+def test_per_role_providers_build_distinct_registered_once() -> None:
+    router, providers = _build_router(_tiered_settings())
+    # Both distinct providers built + registered under their config names; each
+    # built exactly once even though three roles share 'nvidia' (lifecycle: close
+    # each once).
+    assert set(router._providers) == {"ollama", "nvidia"}
+    assert len(providers) == 2
+
+
+def test_roles_resolve_to_their_configured_provider_and_model() -> None:
+    router, _providers = _build_router(_tiered_settings())
+    extract = router.for_role(ModelRole.EXTRACTION)
+    plan = router.for_role(ModelRole.PLANNING)
+    long_ctx = router.for_role(ModelRole.LONG_CONTEXT)
+    assert extract.model == "qwen2.5:3b"
+    assert plan.model == "meta/llama-3.3-70b-instruct"
+    assert long_ctx.model == "meta/llama-3.3-70b-instruct"
+    # Adapter name is shared, but each role is bound to a *distinct* provider obj.
+    assert router._providers["ollama"] is not router._providers["nvidia"]
+
+
+def test_schema_format_enabled_for_ollama_not_cloud() -> None:
+    # Small local models need schema-constrained decoding; capable cloud ones don't.
+    router, _providers = _build_router(_tiered_settings())
+    assert router._providers["ollama"]._use_schema_format is True  # type: ignore[attr-defined]
+    assert router._providers["nvidia"]._use_schema_format is False  # type: ignore[attr-defined]
 
 
 # --- LLM resilience wiring (retry gate) ---------------------------------------
@@ -121,7 +170,8 @@ def test_router_registers_provider_under_config_name_so_policy_resolves() -> Non
 
 def test_retry_disabled_by_default_registers_bare_adapter() -> None:
     settings = _settings()
-    router, provider = _build_router(settings)
+    router, providers = _build_router(settings)
+    provider = providers[0]  # single-provider default settings
     # Reach into the registry: the gate must not wrap when max_attempts is 1.
     assert router._providers[settings.default_provider] is provider
     assert isinstance(provider, OpenAICompatibleProvider)
@@ -129,7 +179,8 @@ def test_retry_disabled_by_default_registers_bare_adapter() -> None:
 
 def test_retry_enabled_registers_wrapped_adapter_and_returns_inner() -> None:
     settings = _settings(llm_retry_max_attempts=3)
-    router, provider = _build_router(settings)
+    router, providers = _build_router(settings)
+    provider = providers[0]
     registered = router._providers[settings.default_provider]
     assert isinstance(registered, ResilientModelProvider)
     # Lifecycle gets the *inner* adapter (it owns the httpx client; ADR 0044).

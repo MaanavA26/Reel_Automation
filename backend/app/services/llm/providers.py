@@ -89,7 +89,9 @@ class MissingProviderKeyError(ValueError):
     """Raised when a key-requiring preset is selected without its API key set."""
 
 
-def build_provider(name: str, settings: Settings) -> OpenAICompatibleProvider:
+def build_provider(
+    name: str, settings: Settings, *, use_schema_format: bool = False
+) -> OpenAICompatibleProvider:
     """Build a configured ``OpenAICompatibleProvider`` for a named preset.
 
     Looks the preset's ``base_url`` up by ``name`` and reads its key from
@@ -116,4 +118,6 @@ def build_provider(name: str, settings: Settings) -> OpenAICompatibleProvider:
             f"provider preset {name!r} requires an API key; set the corresponding "
             f"REEL_AUTOMATION_*_API_KEY (see backend/.env.example)"
         )
-    return OpenAICompatibleProvider(base_url=preset.base_url, api_key=api_key)
+    return OpenAICompatibleProvider(
+        base_url=preset.base_url, api_key=api_key, use_schema_format=use_schema_format
+    )

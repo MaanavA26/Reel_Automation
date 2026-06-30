@@ -50,6 +50,7 @@ class OpenAICompatibleProvider(CloseOwnedClientMixin):
         client: httpx.AsyncClient | None = None,
         max_repair_retries: int = 1,
         timeout: float = 60.0,
+        use_schema_format: bool = False,
     ) -> None:
         if not base_url:
             raise OpenAICompatError("base_url is required (set REEL_AUTOMATION_BASE_URL)")
@@ -58,6 +59,13 @@ class OpenAICompatibleProvider(CloseOwnedClientMixin):
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._max_repair_retries = max_repair_retries
+        # Opt-in schema-constrained decoding: send the caller's JSON Schema as a
+        # `json_schema` response_format so the backend *constrains* generation to
+        # valid matching JSON (vs. plain `json_object` + hope). Off by default (not
+        # portable across all OpenAI-compatible backends, ADR 0007); the
+        # composition root enables it per provider (e.g. local Ollama), where it
+        # makes small models reliably satisfy strict Pydantic schemas (#113).
+        self._use_schema_format = use_schema_format
 
     async def complete_structured(
         self,
@@ -79,7 +87,16 @@ class OpenAICompatibleProvider(CloseOwnedClientMixin):
             {"role": "user", "content": prompt},
         ]
 
-        content = await self._chat(model, messages)
+        # Constrain generation to the schema itself when enabled (else "JSON").
+        if self._use_schema_format:
+            response_format: dict[str, Any] = {
+                "type": "json_schema",
+                "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+            }
+        else:
+            response_format = {"type": "json_object"}
+
+        content = await self._chat(model, messages, response_format)
         last_error: Exception | None = None
         for attempt in range(self._max_repair_retries + 1):
             try:
@@ -99,21 +116,23 @@ class OpenAICompatibleProvider(CloseOwnedClientMixin):
                         ),
                     }
                 )
-                content = await self._chat(model, messages)
+                content = await self._chat(model, messages, response_format)
 
         raise OpenAICompatError(
             f"model output failed schema validation after "
             f"{self._max_repair_retries} repair attempt(s): {last_error}"
         )
 
-    async def _chat(self, model: str, messages: list[dict[str, str]]) -> str:
+    async def _chat(
+        self, model: str, messages: list[dict[str, str]], response_format: dict[str, Any]
+    ) -> str:
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},
             json={
                 "model": model,
                 "messages": messages,
-                "response_format": {"type": "json_object"},
+                "response_format": response_format,
                 "temperature": 0,
             },
         )
