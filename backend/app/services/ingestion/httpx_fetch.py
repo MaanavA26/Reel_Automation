@@ -19,6 +19,7 @@ See ADR 0008 (HTML), ADR 0014 (PDF), and ADR 0043 (fetch/render hardening).
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from collections.abc import Callable
@@ -79,11 +80,23 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
         max_bytes: int = _MAX_BYTES,
         user_agent: str = _DEFAULT_UA,
         resolver: Resolver | None = None,
+        dns_timeout: float = 5.0,
+        fetch_budget: float = 30.0,
     ) -> None:
         self._max_bytes = max_bytes
         self._max_redirects = max_redirects
         self._user_agent = user_agent
         self._resolver = resolver or _default_resolver
+        # Bound the (blocking, stdlib) DNS resolution: `socket.getaddrinfo` has no
+        # timeout of its own and the httpx `timeout` only covers the HTTP request,
+        # not this SSRF pre-flight. See issue #111.
+        self._dns_timeout = dns_timeout
+        # Total wall-clock budget for one source fetch (all redirect hops). httpx's
+        # `timeout` is PER-OPERATION (per read chunk), so a server that trickles
+        # bytes resets the read timeout forever and never trips it. This single
+        # budget bounds every hang vector at once — DNS, connect, slow-read, and
+        # redirect chains — so one bad host can't stall the pipeline (issue #111).
+        self._fetch_budget = fetch_budget
         self._owns_client = client is None
         # Redirects are handled manually (per-request follow_redirects=False) so
         # the SSRF/scheme guard re-runs on every hop; the client default is moot.
@@ -93,11 +106,16 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
             # No auth/cookies are ever attached.
         )
 
-    def _validate_url(self, url: httpx.URL) -> None:
+    async def _validate_url(self, url: httpx.URL) -> None:
         """Reject a disallowed scheme or a host resolving to a blocked IP.
 
         Raises `FetchError` before any request reaches the network — applied to
         the initial URL and re-applied to every redirect target.
+
+        DNS resolution runs off the event loop (`asyncio.to_thread`) under a
+        wall-clock cap (`asyncio.wait_for`), so a slow/unresponsive host can
+        never block the loop or hang the pipeline (issue #111) — it surfaces as a
+        `FetchError` and the source is skipped like any other fetch failure.
         """
         scheme = url.scheme.lower()
         if scheme not in _ALLOWED_SCHEMES:
@@ -118,7 +136,13 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
             candidates = [literal]
         else:
             try:
-                resolved = self._resolver(host)
+                resolved = await asyncio.wait_for(
+                    asyncio.to_thread(self._resolver, host), timeout=self._dns_timeout
+                )
+            except TimeoutError as exc:
+                raise FetchError(
+                    f"dns resolution timed out (> {self._dns_timeout}s) for host {host!r}"
+                ) from exc
             except OSError as exc:
                 raise FetchError(f"could not resolve host {host!r}: {exc}") from exc
             try:
@@ -133,11 +157,27 @@ class HttpxFetchProvider(CloseOwnedClientMixin):
                 raise FetchError(f"blocked private/reserved address {str(ip)!r} for host {host!r}")
 
     async def fetch(self, *, url: str) -> FetchedContent:
+        """Fetch ``url`` under a total wall-clock budget (issue #111).
+
+        Delegates to :meth:`_fetch_impl` inside ``asyncio.wait_for`` so no single
+        source — however it stalls (slow DNS, half-open connection, byte-trickle,
+        redirect chain) — can exceed ``fetch_budget``. On the budget expiring the
+        source surfaces as a `FetchError` and is skipped by the ingestion layer's
+        existing error isolation, never a hang.
+        """
+        try:
+            return await asyncio.wait_for(self._fetch_impl(url), timeout=self._fetch_budget)
+        except TimeoutError as exc:
+            raise FetchError(
+                f"fetch exceeded total budget (> {self._fetch_budget}s) for {url!r}"
+            ) from exc
+
+    async def _fetch_impl(self, url: str) -> FetchedContent:
         current = httpx.URL(url)
         headers = {"User-Agent": self._user_agent}
 
         for _ in range(self._max_redirects + 1):
-            self._validate_url(current)
+            await self._validate_url(current)
             try:
                 async with self._client.stream(
                     "GET", current, headers=headers, follow_redirects=False
