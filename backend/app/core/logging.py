@@ -31,6 +31,13 @@ class JsonFormatter(logging.Formatter):
     the record carries exception info, a ``exc_info`` string is appended. Output
     is single-line by construction: :func:`json.dumps` escapes embedded newlines,
     preserving "one log line = one JSON object".
+
+    One reserved structured-payload attribute is recognized: if a record carries
+    an ``event`` attribute (set via ``logger.log(..., extra={"event": {...}})``),
+    its value is emitted under an ``event`` key. This is the single, additive seam
+    the per-stage event helper (`app.services.runlog.events`, ADR 0057) uses to
+    attach queryable stage metadata; records without it are byte-identical to
+    before.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -41,6 +48,9 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "run_id": get_run_id(),
         }
+        event = getattr(record, "event", None)
+        if event is not None:
+            payload["event"] = event
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         if record.stack_info:
