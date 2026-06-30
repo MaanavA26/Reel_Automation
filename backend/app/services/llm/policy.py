@@ -22,12 +22,23 @@ def default_policy(settings: Settings | None = None) -> RolePolicy:
     """
     s = settings or get_settings()
     d = s.default_provider
+
+    def _provider_name(override: str) -> str:
+        # An empty *or whitespace-only* override falls back to the default
+        # provider; otherwise a value like ``"  "`` would be treated as a real
+        # provider name and fail routing later with an unknown-provider error.
+        return override.strip() or d
+
     # A per-role provider override (empty => the default provider) tiers the
     # fabric across providers/models by role (#113): e.g. extraction on a local
     # 3B (ollama), the judgment roles on a capable cloud 70B (nvidia).
     return {
-        ModelRole.PLANNING: ModelChoice(s.planning_provider or d, s.planning_model),
-        ModelRole.EXTRACTION: ModelChoice(s.extraction_provider or d, s.extraction_model),
-        ModelRole.LONG_CONTEXT: ModelChoice(s.long_context_provider or d, s.long_context_model),
-        ModelRole.FALLBACK: ModelChoice(s.fallback_provider or d, s.fallback_model),
+        ModelRole.PLANNING: ModelChoice(_provider_name(s.planning_provider), s.planning_model),
+        ModelRole.EXTRACTION: ModelChoice(
+            _provider_name(s.extraction_provider), s.extraction_model
+        ),
+        ModelRole.LONG_CONTEXT: ModelChoice(
+            _provider_name(s.long_context_provider), s.long_context_model
+        ),
+        ModelRole.FALLBACK: ModelChoice(_provider_name(s.fallback_provider), s.fallback_model),
     }
