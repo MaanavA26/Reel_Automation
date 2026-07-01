@@ -37,7 +37,9 @@ the "AI magic" abstraction CLAUDE.md §11 forbids.
 
 `BeatRole` (a `StrEnum`) adds `BUILD` (`"build"`), `PAYOFF` (`"payoff"`), and
 `LOOP` (`"loop"`). The fixed construction order becomes: exactly one `HOOK`, then
-≥1 `BUILD`, then exactly one `PAYOFF`, then exactly one `LOOP`.
+zero or more `BUILD` beats, then exactly one `PAYOFF`, then exactly one `LOOP`.
+(A multi-line narrative yields ≥1 `BUILD`; a single-line narrative yields none —
+see Decision 2.)
 
 `BODY` and `CTA` are **retained as deprecated values**, not deleted. A `StrEnum`
 value may already be serialized inside a persisted `ShortScript` (JSON/DB); removing

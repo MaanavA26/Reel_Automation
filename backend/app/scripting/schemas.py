@@ -56,9 +56,10 @@ class BeatRole(StrEnum):
     """The structural role of a `ScriptBeat` within a short-form arc.
 
     The ordering of a `ShortScript` is fixed by construction (ADR 0061): exactly
-    one ``HOOK`` first, then one or more ``BUILD`` beats, then exactly one
-    ``PAYOFF``, then exactly one ``LOOP`` last. (For a single-line narrative
-    there are no ``BUILD`` beats: ``HOOK → PAYOFF → LOOP``.)
+    one ``HOOK`` first, then zero or more ``BUILD`` beats, then exactly one
+    ``PAYOFF``, then exactly one ``LOOP`` last. A multi-line narrative yields one
+    or more ``BUILD`` beats; a single-line narrative yields none
+    (``HOOK → PAYOFF → LOOP``).
 
     ``BODY`` and ``CTA`` are **deprecated** (ADR 0061 supersedes 0038): the
     builder no longer emits them (``BODY`` split into ``BUILD``/``PAYOFF``,
@@ -123,8 +124,9 @@ class ShortScript(BaseModel):
     - ``total_estimated_ms`` — the honest sum of the beats' WPM estimates.
     - ``target_duration_ms`` — ``min(total_estimated_ms, SHORTS_CEILING_MS)``,
       the Shorts-suitable target the media pipeline aims at.
-    - ``exceeds_shorts_ceiling`` — True iff ``total_estimated_ms`` exceeds the
-      60s Shorts ceiling (band upper bound).
+    - ``exceeds_shorts_ceiling`` — True iff ``total_estimated_ms`` exceeds this
+      product's internal ~60s editorial/QC ceiling (``SHORTS_CEILING_MS``, the
+      band upper bound — not an external platform cap).
     - ``below_shorts_floor`` — True iff ``total_estimated_ms`` is *below* the
       Shorts floor (``SHORTS_FLOOR_MS``, default 45s; band lower bound). Too-thin
       scripts under-retain against the QC rubric, so this is flagged, not

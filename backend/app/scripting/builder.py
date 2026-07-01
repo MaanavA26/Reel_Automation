@@ -49,11 +49,14 @@ import re
 from app.schemas.research_state import CreatorPacket, CreatorWarning, HookIdea, NarrativeOption
 from app.scripting.schemas import BeatRole, ScriptBeat, ShortScript
 
-# Shorts length band (ADR 0061): vertical short-form (YouTube Shorts / Instagram
-# Reels) caps at 60 seconds — the builder targets at most this and flags overflow
-# (never scales). The floor is the QC-rubric minimum for a retention-viable short
-# (≥45s per the Definition-of-Done rubric); too-thin scripts are flagged
-# `below_shorts_floor`, never padded up to length. Both bounds are advisory.
+# Shorts length band (ADR 0061). The ceiling is *this product's* internal
+# editorial/QC upper bound for a vertical short (~60s), not an external platform
+# cap — the hosting platforms allow longer verticals (e.g. YouTube counts vertical
+# up to 3 min as a Short); we choose to keep our shorts tight. The builder targets
+# at most this and flags overflow (never scales). The floor is the QC-rubric
+# minimum for a retention-viable short (≥45s per the Definition-of-Done rubric);
+# too-thin scripts are flagged `below_shorts_floor`, never padded up to length.
+# Both bounds are advisory.
 SHORTS_CEILING_MS = 60_000
 SHORTS_FLOOR_MS = 45_000
 
