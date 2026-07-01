@@ -35,6 +35,27 @@ def _measurement(*, sample_rate: int = 44100, soft_sub: bool = False) -> QCMeasu
     )
 
 
+# --- loudness primitives are reused, not re-implemented (spine C1, no drift) ---
+
+
+def test_loudness_primitives_are_the_shared_composition_ones() -> None:
+    """The probe reuses `loudness.py`'s builder/parser verbatim — no local copy.
+
+    Caveat check (ADR 0060): the QC probe measures loudness/true-peak against the
+    exact primitives the render path masters with, so the bands cannot drift. Pin
+    identity (same function objects, same `LoudnessStats` model) rather than just
+    behaviour, so a future re-implementation in the probe fails loudly here.
+    """
+    from app.media.composition import loudness as comp_loudness
+    from app.media.qc import probe as qc_probe
+
+    assert qc_probe.build_loudnorm_measure_args is comp_loudness.build_loudnorm_measure_args
+    assert qc_probe.parse_loudnorm_stats is comp_loudness.parse_loudnorm_stats
+    assert qc_probe.LoudnessStats is comp_loudness.LoudnessStats
+    # The measurement's loudness field carries the shared model, not a QC copy.
+    assert QCMeasurement.model_fields["loudness"].annotation is comp_loudness.LoudnessStats
+
+
 # --- pure argv builder + parser --------------------------------------------
 
 

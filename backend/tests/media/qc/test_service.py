@@ -11,11 +11,13 @@ from __future__ import annotations
 import pytest
 
 from app.media.composition.loudness import LoudnessStats
+from app.media.qc.gate import QCGate
 from app.media.qc.probe import QCMeasurement
 from app.media.qc.report import QCCheckKind, QCCheckResult, QCCheckStatus
 from app.media.qc.rubric import QCRubric
 from app.media.qc.service import QCService
 from app.media.schemas import Caption, CaptionTrack, RenderedVideo
+from app.safety.verdict import SafetyDecision
 
 
 def _measurement(
@@ -296,6 +298,50 @@ def test_overall_summary_is_code_derived_from_checks() -> None:
     # Counts partition the checks.
     total = report.summary.passed_count + report.summary.skipped_count + report.summary.failed_count
     assert total == len(report.checks)
+
+
+# --- the headline verdict (the safeguard made concrete) --------------------
+
+
+def test_headline_verdict_hermetic_render_is_review_locked() -> None:
+    """The ADR 0060 headline: a representative hermetic render → 8 PASS / 1 SKIPPED /
+    1 FAIL → overall FAIL → gate REVIEW.
+
+    Fixture: an otherwise-healthy short (in-band length/loudness/peak/rate/pace,
+    prompt first cue, tight cuts, full caption coverage) whose *only* miss is the
+    libass-absent soft-mux caption fallback (``has_soft_subtitle_stream=True``).
+    That single honest signal FAILs ``CAPTIONS_BURNED_IN``; ``CAPTION_SAFE_ZONE``
+    is SKIPPED (OCR deferred). The exact tri-state counts, the specific SKIPPED and
+    FAILed check identities, the code-derived overall FAIL, and the gate's REVIEW
+    decision are all pinned — this is the autonomous-mode safeguard (spine C4) made
+    concrete: no hermetic render can silently auto-publish until libass lands.
+    """
+    words = " ".join(["word"] * 25)  # ~150 words / 60s = 2.5 wps, in the pace band
+    cues = [Caption(start_ms=i * 10_000, end_ms=(i + 1) * 10_000, text=words) for i in range(6)]
+    captions = CaptionTrack(cues=cues, produced_via="subtitles:deterministic")
+    edit_list = [(i * 2000, (i + 1) * 2000) for i in range(30)]  # 30 x 2s, all under 3s
+    video = _video(duration_ms=60_000, edit_list=edit_list)
+    # Healthy audio master, but the render soft-muxed captions (no libass).
+    measurement = _measurement(soft_sub=True)
+
+    report = QCService().evaluate(video=video, captions=captions, measurement=measurement)
+
+    # Exact per-check tri-state counts.
+    assert (
+        report.summary.passed_count,
+        report.summary.skipped_count,
+        report.summary.failed_count,
+    ) == (8, 1, 1)
+    # The specific SKIPPED and FAILed checks (counts alone would not pin identities).
+    assert report.failed_checks == [QCCheckKind.CAPTIONS_BURNED_IN]
+    assert report.skipped_checks == [QCCheckKind.CAPTION_SAFE_ZONE]
+    # Code-derived overall + strict-green property.
+    assert report.summary.overall is QCCheckStatus.FAIL
+    assert report.summary.passed is False
+    # The gate maps the report to a human-REVIEW hold (not ALLOW, not BLOCK).
+    verdict = QCGate().evaluate(report)
+    assert verdict.decision is SafetyDecision.REVIEW
+    assert verdict.allowed is False
 
 
 def test_report_provenance() -> None:
