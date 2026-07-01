@@ -60,6 +60,7 @@ class RecordedRender:
     visual_uris: list[str]
     width: int
     height: int
+    caption_style: CaptionStyle
 
 
 class FakeCompositionService:
@@ -93,6 +94,7 @@ class FakeCompositionService:
                 visual_uris=list(visual_uris),
                 width=width,
                 height=height,
+                caption_style=caption_style,
             )
         )
         return RenderedVideo(

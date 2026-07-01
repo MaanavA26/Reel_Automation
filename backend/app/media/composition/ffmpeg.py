@@ -389,6 +389,7 @@ class FfmpegCompositionService:
                 visual_uris=list(visual_uris),
                 width=width,
                 height=height,
+                caption_style=caption_style,
             )
         )
         if not visual_uris:

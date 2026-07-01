@@ -19,11 +19,18 @@ symbol.
 
 from __future__ import annotations
 
+import re
 import secrets
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _STRICT = ConfigDict(extra="forbid")
+
+# A `#RRGGBB` hex colour: exactly one leading '#' and exactly six hex digits.
+# Anchored so `123456` (no '#'), `##123456` (double), `#12345` (short), and
+# `#GGGGGG` (non-hex) are all rejected. Shared shape for the `CaptionStyle`
+# colour validators here and the `subtitles.base` colour helper (ADR 0059).
+_RGB_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 def _gen_id(prefix: str) -> str:
@@ -127,9 +134,16 @@ class CaptionStyle(BaseModel):
     This object describes **cue-level** styling only: a single fade per cue. It
     does NOT model word-level karaoke ("animated captions"); that is a separate
     future step (ADR 0059 §D2).
+
+    Unlike the other media DTOs this model is **frozen** (`frozen=True`): it is a
+    styling value object and the module-level `DEFAULT_CAPTION_STYLE` is a shared
+    singleton passed by default into every `render` signature, so freezing it
+    prevents a caller from accidentally mutating the shared default in place and
+    leaking that change to unrelated renders (ADR 0059 review, #132). The other
+    DTOs stay non-frozen (no shared mutable default to protect).
     """
 
-    model_config = _STRICT
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     font_name: str = "Arial"
     font_size: int = Field(default=72, gt=0)
@@ -141,6 +155,35 @@ class CaptionStyle(BaseModel):
     fade_out_ms: int = Field(default=120, ge=0)
     # Left/right safe-area inset as a fraction of frame width (0.10 = 10%).
     margin_fraction: float = Field(default=0.10, ge=0, lt=0.5)
+
+    @field_validator("font_name")
+    @classmethod
+    def _validate_font_name(cls, value: str) -> str:
+        """Reject font names that would corrupt the ASS ``Style:`` row.
+
+        The ASS ``Style:`` line is comma-delimited, so a comma in the font name
+        would shift every subsequent field; a newline/carriage-return would break
+        the single-line row entirely, and other control characters are never
+        valid in a font face. Reject (rather than silently strip) so a bad brand
+        config surfaces loudly, consistent with the strict-model house style.
+        """
+        if "," in value:
+            raise ValueError(
+                f"font_name must not contain a comma (ASS field delimiter), got {value!r}"
+            )
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+            raise ValueError(
+                f"font_name must not contain newlines or control characters, got {value!r}"
+            )
+        return value
+
+    @field_validator("primary_colour", "outline_colour")
+    @classmethod
+    def _validate_colour(cls, value: str) -> str:
+        """Require exactly one leading ``#`` followed by exactly six hex digits."""
+        if not _RGB_HEX.match(value):
+            raise ValueError(f"colour must be `#RRGGBB` hex, got {value!r}")
+        return value
 
 
 # Module-level default so callers can take a `CaptionStyle` parameter without a

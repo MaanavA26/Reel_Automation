@@ -12,8 +12,9 @@ P1 Step 2 of the creative-quality overhaul (epic #125 / issue #131). The rendere
 already burns captions in via ffmpeg's `subtitles` filter (ADR 0058 / issue #116),
 but it feeds that filter a plain **SRT** — unstyled white default-font text. Against
 a native short-form feed that reads as amateurish: no brand font, no heavy outline
-for legibility over busy B-roll, no entrance/exit fade. The Definition-of-Done
-(memory: DoD rubric) calls for legible, on-brand, **burned-in** captions.
+for legibility over busy B-roll, no entrance/exit fade. The creative-quality
+Definition-of-Done for the epic (#125, driving issue #131 — *unverified* repo-lore,
+not yet a checked-in rubric doc) calls for legible, on-brand, **burned-in** captions.
 
 The composition/subtitle layer is a deterministic **tool**, never an agent
 (CLAUDE.md §4): there is no judgment here, only a fixed mapping from a structured
@@ -37,11 +38,25 @@ A strict (`extra="forbid"`) Pydantic value object next to the other media DTOs:
 `font_name`, `font_size`, `primary_colour`, `outline_colour`, `outline_width`,
 `fade_in_ms`, `fade_out_ms`, and `margin_fraction` (default `0.10` = 10% L/R safe
 inset). Colours are stored as designer-facing `#RRGGBB` hex and converted to ASS's
-wire format only inside the formatter — never stored pre-converted. The config
-matches the house style of the surrounding DTOs (`extra="forbid"`, **not** frozen —
-no existing media DTO is frozen). A module-level `DEFAULT_CAPTION_STYLE = CaptionStyle()`
-is the single shared default referenced by all three `render` signatures, which also
-sidesteps ruff B008 (function-call-in-default-argument).
+wire format only inside the formatter — never stored pre-converted.
+
+**Input validation (#132 review).** `font_name` is rejected (Pydantic
+`field_validator`) if it contains a comma — the ASS `Style:` field delimiter, which
+would shift every downstream field — or a newline/control char that would break the
+single-line row. `primary_colour`/`outline_colour` are validated against a shared
+`_RGB_HEX = ^#[0-9A-Fa-f]{6}$` (exactly one leading `#`, exactly six hex digits), the
+same anchored pattern `subtitles.base._ass_colour` uses, so `123456`, `##123456`,
+`#12345`, and `#GGGGGG` are all rejected before they reach the formatter.
+
+**Frozen (#132 review).** Unlike the other four media DTOs, `CaptionStyle` is
+`ConfigDict(extra="forbid", frozen=True)`. A module-level
+`DEFAULT_CAPTION_STYLE = CaptionStyle()` is the single shared default referenced by
+all three `render` signatures (which also sidesteps ruff B008,
+function-call-in-default-argument). Because that one instance is shared across every
+render that passes no explicit style, freezing it prevents a caller from mutating the
+shared default in place and leaking the change to unrelated renders. The other DTOs
+stay non-frozen — none has a shared mutable default worth protecting, so freezing them
+would widen the blast radius for no benefit.
 
 ### 2. A pure `format_ass(track, *, style, width, height)` formatter (`subtitles.base`)
 
@@ -156,9 +171,13 @@ existing caller is unaffected.
   per-word timings the pipeline does not yet produce and is a distinct feature. It is
   the natural next step (§D2) on the same `format_ass` seam — a future ADR adds
   per-word `\kf` spans once word timings exist.
-- **`frozen=True` on `CaptionStyle`.** Rejected: no existing media DTO is frozen; the
-  house style here is `extra="forbid"` only. Matching the surrounding code over
-  introducing a new convention.
+- **Leaving `CaptionStyle` non-frozen.** Originally chosen to match the surrounding
+  DTOs (no other media DTO is frozen), but **reversed in the #132 review**: because
+  `DEFAULT_CAPTION_STYLE` is a shared module-level singleton passed by default into
+  every `render`, an in-place mutation would leak across unrelated renders. The narrow
+  fix — `frozen=True` on `CaptionStyle` only, not the other DTOs — protects the shared
+  default at the cost of one deliberate, documented divergence from the local house
+  style (see Decision §1).
 
 ### D2 — deferred follow-up
 

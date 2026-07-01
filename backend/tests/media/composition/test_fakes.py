@@ -5,7 +5,13 @@ from __future__ import annotations
 import asyncio
 
 from app.media.composition.base import CompositionService, FakeCompositionService
-from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech
+from app.media.schemas import (
+    DEFAULT_CAPTION_STYLE,
+    CaptionStyle,
+    CaptionTrack,
+    RenderedVideo,
+    SynthesizedSpeech,
+)
 
 
 def _audio() -> SynthesizedSpeech:
@@ -42,3 +48,20 @@ def test_render_echoes_requested_dimensions() -> None:
         service.render(audio=_audio(), captions=_captions(), visual_uris=[], width=720, height=1280)
     )
     assert (video.width, video.height) == (720, 1280)
+
+
+def test_render_records_default_caption_style() -> None:
+    # No explicit style -> the shared module-level default is captured.
+    service = FakeCompositionService()
+    asyncio.run(service.render(audio=_audio(), captions=_captions(), visual_uris=[]))
+    assert service.calls[0].caption_style is DEFAULT_CAPTION_STYLE
+
+
+def test_render_records_custom_caption_style() -> None:
+    # Style propagation is assertable without real ffmpeg (ADR 0059, #132 review).
+    service = FakeCompositionService()
+    style = CaptionStyle(font_name="Montserrat", font_size=96, primary_colour="#123456")
+    asyncio.run(
+        service.render(audio=_audio(), captions=_captions(), visual_uris=[], caption_style=style)
+    )
+    assert service.calls[0].caption_style == style

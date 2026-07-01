@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from app.media.schemas import Caption, CaptionStyle, CaptionTrack
+from app.media.schemas import _RGB_HEX, Caption, CaptionStyle, CaptionTrack
 
 # Canonical V4+ style field order (libass expects this exact 23-field layout in
 # both the [V4+ Styles] `Format:` line and each `Style:` row). Kept as a constant
@@ -121,14 +121,16 @@ def _ass_colour(rgb_hex: str) -> str:
     blue, green, red, and alpha ``00`` means fully **opaque** (``FF`` is fully
     transparent). Captions are always opaque, so alpha is fixed at ``00``. E.g.
     ``#123456`` (R=12 G=34 B=56) → ``&H00563412``.
+
+    Requires **exactly one** leading ``#`` and **exactly six** hex digits (shared
+    `_RGB_HEX` shape): ``123456`` (no ``#``), ``##123456`` (double ``#``),
+    ``#12345`` (short), and ``#GGGGGG`` (non-hex) all raise. Do not use
+    ``lstrip('#')`` — it silently accepts the ``#``-less and double-``#`` forms.
     """
-    s = rgb_hex.lstrip("#")
-    if len(s) != 6:
-        raise ValueError(f"colour must be #RRGGBB hex, got {rgb_hex!r}")
-    try:
-        r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
-    except ValueError as exc:
-        raise ValueError(f"colour must be #RRGGBB hex, got {rgb_hex!r}") from exc
+    if not _RGB_HEX.match(rgb_hex):
+        raise ValueError(f"colour must be `#RRGGBB` hex, got {rgb_hex!r}")
+    s = rgb_hex[1:]
+    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
     return f"&H00{b:02X}{g:02X}{r:02X}"
 
 

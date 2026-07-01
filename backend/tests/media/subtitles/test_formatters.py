@@ -203,11 +203,42 @@ def test_ass_style_row_uses_converted_colours() -> None:
     assert "&H00000000" in style_row  # outline converted
 
 
-def test_ass_colour_rejects_bad_hex() -> None:
-    with pytest.raises(ValueError):
-        _ass_colour("#12345")  # too short
-    with pytest.raises(ValueError):
-        _ass_colour("#12345Z")  # non-hex
+def test_ass_style_row_carries_font_name_and_size() -> None:
+    # A non-default font name + size must land in the Style: row's Fontname /
+    # Fontsize fields (style propagation, #132 review).
+    out = format_ass(
+        _track(Caption(start_ms=0, end_ms=1000, text="hi")),
+        style=CaptionStyle(font_name="Montserrat", font_size=96),
+        width=1080,
+        height=1920,
+    )
+    style_row = next(ln for ln in out.splitlines() if ln.startswith("Style:"))
+    fields = [f.strip() for f in style_row[len("Style:") :].split(",")]
+    names = [f.strip() for f in _ASS_STYLE_FORMAT.split(",")]
+    assert fields[names.index("Fontname")] == "Montserrat"
+    assert fields[names.index("Fontsize")] == "96"
+
+
+def test_ass_colour_accepts_valid_rrggbb() -> None:
+    # A valid `#RRGGBB` passes and converts (regression alongside the tightened
+    # rejection cases below).
+    assert _ass_colour("#123456") == "&H00563412"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "123456",  # no leading '#' (lstrip('#') would have wrongly accepted this)
+        "##123456",  # double '#' (lstrip('#') would have wrongly accepted this)
+        "#12345",  # too short (5 hex digits)
+        "#GGGGGG",  # right length, non-hex digits
+        "#12345Z",  # non-hex
+        "#1234567",  # too long
+    ],
+)
+def test_ass_colour_rejects_bad_hex(bad: str) -> None:
+    with pytest.raises(ValueError, match="colour must be"):
+        _ass_colour(bad)
 
 
 def test_ass_escapes_override_characters_in_cue_text() -> None:
