@@ -9,8 +9,10 @@ stdlib SRT/VTT *formatters* that are fully unit-testable (CLAUDE.md §4 lists
 "subtitle generation" as tool work).
 
 The protocol is **synchronous**: the deterministic path is CPU-only, not I/O.
-An async variant (e.g. forced alignment against synthesized audio to refine
-timings) is deferred to a future milestone — see ADR 0019.
+Forced alignment against the synthesized audio (the word-timing source for
+karaoke captions) is a separate async seam — `app.media.alignment` (ADR 0062);
+this module stays pure and only *renders* whatever word timings the cues
+already carry.
 """
 
 from __future__ import annotations
@@ -155,6 +157,56 @@ def _escape_ass_text(text: str) -> str:
     )
 
 
+def _format_karaoke_body(cue: Caption) -> str:
+    r"""Emit a cue's word spans as sequential ``\kf`` karaoke syllables. Pure.
+
+    ASS karaoke: each ``{\kf<dur>}`` opens a syllable whose following text
+    sweep-fills from SecondaryColour to PrimaryColour over ``<dur>``
+    **centiseconds**, syllables playing strictly in sequence from the Dialogue
+    line's start. This maps the cue's absolute-ms word spans onto that
+    sequential clock (ADR 0062):
+
+    * Boundaries are **cue-relative centiseconds, truncated** (``// 10`` — the
+      same locked ms→cs decision as `_format_ass_timestamp`, ADR 0059) and
+      clamped monotonically into ``[0, cue span]``. Each emitted duration is a
+      *difference of cumulative boundaries*, so the total telescopes to the
+      last word's end boundary and can never exceed the cue span — the karaoke
+      always fits the Dialogue line's visible window.
+    * The leading offset (cue start → first word) and inter-word gaps become
+      **empty-text** ``{\kf<gap>}`` spacer syllables (silence sweeps nothing);
+      zero-length spacers are omitted.
+    * Clamping — not raising — absorbs a word that starts before the cue or
+      ends after it: forced-aligned word times and the pipeline's
+      length-proportional cue boundaries are *independent* estimates, so mild
+      overhang at cue seams is expected and must degrade, never fail a render.
+      A word whose own span is inverted (``end_ms < start_ms``) is a caller
+      bug and raises, exactly like the cue-level `_validate_cues`.
+    * Word text passes through the same `_escape_ass_text` as cue text; words
+      are joined by a trailing space attached to the preceding syllable. The
+      word spans **are** the rendered text — ``cue.text`` is not re-emitted.
+    """
+    span_cs = (cue.end_ms - cue.start_ms) // 10
+    parts: list[str] = []
+    prev_cs = 0
+    last = len(cue.words) - 1
+    for i, word in enumerate(cue.words):
+        if word.end_ms < word.start_ms:
+            raise ValueError(
+                f"cue word {i} ({word.text!r}) has end_ms ({word.end_ms}) "
+                f"< start_ms ({word.start_ms})"
+            )
+        start_cs = min(max((word.start_ms - cue.start_ms) // 10, prev_cs), span_cs)
+        end_cs = min(max((word.end_ms - cue.start_ms) // 10, start_cs), span_cs)
+        if start_cs > prev_cs:
+            parts.append(f"{{\\kf{start_cs - prev_cs}}}")
+        text = _escape_ass_text(word.text)
+        if i != last:
+            text += " "
+        parts.append(f"{{\\kf{end_cs - start_cs}}}{text}")
+        prev_cs = end_cs
+    return "".join(parts)
+
+
 def format_ass(
     track: CaptionTrack,
     *,
@@ -180,15 +232,28 @@ def format_ass(
       ``MarginL``/``MarginR`` = ``round(margin_fraction * width)`` with a
       ``MarginV`` placing text in the bottom third.
     * ``[Events]`` is one ``Dialogue:`` per cue; each cue's text is prefixed with
-      a cue-level ``{\fad(in,out)}`` override, then the (escaped) cue text.
+      a cue-level ``{\fad(in,out)}`` override, then either the (escaped) cue text
+      or — when the cue carries word timings — per-word karaoke syllables.
 
-    Honesty (ADR 0059): this is **cue-level fade only** — NOT the word-level
-    karaoke "animated captions" of the references; that is deferred (§D2). Line
-    count (≤2) is **not** guaranteed here — ``WrapStyle`` + margins bias toward it
-    but real wrapping needs font metrics and upstream cue segmentation. The
-    output is never visually validated hermetically (no libass in CI); the unit
-    tests assert the ASS *text* shape, and a real-render check is a last-mile
-    follow-up.
+    Word-level karaoke (ADR 0062): a cue whose ``words`` list is non-empty is
+    emitted as sequential per-word ``{\kf}`` sweep syllables (see
+    `_format_karaoke_body`); a cue with **no** words is emitted exactly as the
+    ADR 0059 cue-level form, so a track with no word timings anywhere renders
+    **byte-identically** to the pre-karaoke output (graceful degrade; mixed
+    tracks are fine per-cue). The ``{\fad}`` is deliberately **kept** on karaoke
+    lines: ``\fad`` animates line *alpha* while ``\kf`` animates per-syllable
+    *fill colour* — independent channels libass composes without conflict — and
+    keeping it gives mixed tracks one uniform entrance/exit. The style row's
+    SecondaryColour (the karaoke pre-highlight fill) is set from
+    ``style.secondary_colour`` only when the track carries words; otherwise it
+    stays equal to PrimaryColour, preserving the byte-stability above.
+
+    Honesty (ADR 0059/0062): line count (≤2) is **not** guaranteed here —
+    ``WrapStyle`` + margins bias toward it but real wrapping needs font metrics
+    and upstream cue segmentation. The output — including the karaoke look and
+    its timing feel — is never visually validated hermetically (no libass in
+    CI); the unit tests assert the ASS *text* shape, and a real-render check is
+    a last-mile follow-up.
     """
     if width <= 0 or height <= 0:
         raise ValueError(f"width/height must be positive, got {width}x{height}")
@@ -203,6 +268,14 @@ def format_ass(
     outline = _ass_colour(style.outline_colour)
     # BackColour (shadow) reuses the outline colour, fully opaque.
     back = outline
+    # SecondaryColour is the karaoke pre-highlight fill: \kf sweeps FROM it TO
+    # PrimaryColour, so it must differ from primary for the sweep to be
+    # visible. Only a track that actually carries word timings gets the karaoke
+    # secondary; a wordless track keeps SecondaryColour == PrimaryColour so its
+    # output stays byte-identical to the ADR 0059 cue-fade format (libass uses
+    # SecondaryColour only for karaoke, so this is purely text-stability).
+    has_word_timings = any(cue.words for cue in track.cues)
+    secondary = _ass_colour(style.secondary_colour) if has_word_timings else primary
 
     # One style row, fields in the exact _ASS_STYLE_FORMAT order (23 fields):
     # Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
@@ -211,7 +284,7 @@ def format_ass(
     # Encoding. Bold=-1 (ASS true), BorderStyle=1 (outline+shadow), Alignment=2.
     style_row = (
         f"Style: {_ASS_STYLE_NAME},{style.font_name},{style.font_size},"
-        f"{primary},{primary},{outline},{back},"
+        f"{primary},{secondary},{outline},{back},"
         f"-1,0,0,0,100,100,0,0,1,{style.outline_width:g},0,2,"
         f"{margin_lr},{margin_lr},{margin_v},1"
     )
@@ -236,7 +309,10 @@ def format_ass(
     for cue in track.cues:
         start = _format_ass_timestamp(cue.start_ms)
         end = _format_ass_timestamp(cue.end_ms)
-        text = fade + _escape_ass_text(cue.text)
+        # Karaoke when the cue carries word timings; the exact ADR 0059
+        # cue-level form otherwise (graceful per-cue degrade).
+        body = _format_karaoke_body(cue) if cue.words else _escape_ass_text(cue.text)
+        text = fade + body
         # Per-cue margins are 0,0,0 -> inherit the Style row's real margins.
         lines.append(f"Dialogue: 0,{start},{end},{_ASS_STYLE_NAME},0,0,0,,{text}")
 

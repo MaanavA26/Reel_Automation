@@ -1,16 +1,20 @@
 """Tests for the MediaPipeline creator-packet → media handoff (ADR 0025).
 
-Fully hermetic: the `FakeTTSProvider` and `FakeCompositionService` seams plus the
-real `DeterministicSubtitleService` (pure, no fake needed). No network, no ffmpeg.
+Fully hermetic: the `FakeTTSProvider`, `FakeCompositionService`, and
+`FakeWordAligner` seams plus the real `DeterministicSubtitleService` (pure, no
+fake needed). No network, no ffmpeg, no aeneas.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Sequence
 from itertools import pairwise
 
 import pytest
 
+from app.media.alignment.base import AlignmentError, FakeWordAligner
 from app.media.composition.base import FakeCompositionService
 from app.media.pipeline import (
     MediaPipeline,
@@ -19,6 +23,7 @@ from app.media.pipeline import (
     _allocate_timings,
     _split_into_beats,
 )
+from app.media.schemas import WordSpan
 from app.media.tts.base import FakeTTSProvider
 from app.schemas.research_state import CreatorPacket, NarrativeOption
 
@@ -155,3 +160,73 @@ def test_build_raises_when_narrative_index_out_of_range() -> None:
 def test_build_raises_when_narrative_has_no_narratable_beat() -> None:
     with pytest.raises(MediaPipelineError, match="no narratable script segments"):
         _build(_packet(_narrative("Empty", "   \n\n  ")))
+
+
+# --- optional word alignment (karaoke carrier wiring, ADR 0062) --------------
+
+
+class _RaisingAligner:
+    """A `WordAligner` stub whose every call fails (the degrade-path trigger)."""
+
+    name = "raising"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def align(self, *, audio_path: str, segments: Sequence[str]) -> list[list[WordSpan]]:
+        self.calls += 1
+        raise AlignmentError("aeneas not installed")
+
+
+def test_build_without_aligner_leaves_cues_word_free() -> None:
+    # Default None -> exactly the pre-ADR-0062 behavior: no karaoke carrier.
+    plan = _build(_packet(_narrative("Arc", "hook\nbody")))
+    assert all(cue.words == [] for cue in plan.captions.cues)
+
+
+def test_build_with_aligner_attaches_word_timings() -> None:
+    aligner = FakeWordAligner(ms_per_word=100)
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=10), FakeCompositionService(), word_aligner=aligner
+    )
+    plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one two\nthree"))))
+
+    assert [len(cue.words) for cue in plan.captions.cues] == [2, 1]
+    assert [w.text for w in plan.captions.cues[0].words] == ["one", "two"]
+    # The aligner was asked exactly once, for the narration audio + the beats.
+    assert len(aligner.calls) == 1
+    assert aligner.calls[0].audio_path == plan.audio.audio_uri
+    assert aligner.calls[0].segments == ["one two", "three"]
+
+
+def test_build_degrades_when_aligner_raises(caplog: pytest.LogCaptureFixture) -> None:
+    aligner = _RaisingAligner()
+    pipeline = MediaPipeline(FakeTTSProvider(), FakeCompositionService(), word_aligner=aligner)
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one\ntwo"))))
+
+    # The render completed on the cue-level path; nothing was attached.
+    assert aligner.calls == 1
+    assert plan.video.produced_via == "composition:fake"
+    assert all(cue.words == [] for cue in plan.captions.cues)
+    assert any("word alignment failed" in record.getMessage() for record in caplog.records)
+
+
+def test_build_degrades_when_aligner_miscounts_segments(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _MiscountingAligner:
+        name = "miscounting"
+
+        async def align(self, *, audio_path: str, segments: Sequence[str]) -> list[list[WordSpan]]:
+            return [[]]  # one timing list for two segments: a broken contract
+
+    pipeline = MediaPipeline(
+        FakeTTSProvider(), FakeCompositionService(), word_aligner=_MiscountingAligner()
+    )
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one\ntwo"))))
+
+    # Nothing half-attached: the count check runs before any cue is touched.
+    assert all(cue.words == [] for cue in plan.captions.cues)
+    assert any("word alignment failed" in record.getMessage() for record in caplog.records)

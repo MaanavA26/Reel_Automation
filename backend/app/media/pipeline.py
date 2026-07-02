@@ -4,7 +4,8 @@ A deterministic *tool* (CLAUDE.md §3.3/§4 — no LLM, no judgment): given a De
 Research `CreatorPacket` (the band-D handoff artifact, §5.4), it produces a
 `MediaPlan` — an assembled-video descriptor — by chaining the three media seams:
 
-    narrative selection → TTS synthesis → subtitle timing → composition
+    narrative selection → TTS synthesis → subtitle timing
+        → (optional) word alignment → composition
 
 The judgment about *what* to narrate already happened upstream in the Short-Form
 Content Strategist (the packet's `narratives`); this tool only *executes* the
@@ -36,6 +37,7 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.media.alignment.base import AlignmentError, WordAligner
 from app.media.composition.base import CompositionService
 from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech, _gen_id
 from app.media.subtitles.base import DeterministicSubtitleService, SubtitleService
@@ -128,6 +130,13 @@ class MediaPipeline:
     carries no visuals and image/video sourcing is deferred (ADR 0019), so the
     pipeline neither invents nor requires a visual provider — an empty list
     renders narration + captions over a default background.
+
+    ``word_aligner`` is **optional** (default ``None``): the word-timing source
+    for karaoke captions is an external-tool-gated seam (ADR 0062), so the
+    pipeline works exactly as before without one. When present, alignment is
+    requested post-TTS and word timings are attached to the caption cues;
+    alignment failure logs a warning and degrades to cue-level captions —
+    it never fails the render.
     """
 
     name = "pipeline"
@@ -139,11 +148,13 @@ class MediaPipeline:
         subtitle_service: SubtitleService | None = None,
         *,
         voice: str = "narrator",
+        word_aligner: WordAligner | None = None,
     ) -> None:
         self._tts = tts_provider
         self._composition = composition_service
         self._subtitles: SubtitleService = subtitle_service or DeterministicSubtitleService()
         self._voice = voice
+        self._word_aligner = word_aligner
 
     async def build(
         self,
@@ -175,6 +186,8 @@ class MediaPipeline:
 
         timings = _allocate_timings(segments, audio.duration_ms)
         captions = self._subtitles.build_track(segments=segments, timings=timings)
+        if self._word_aligner is not None:
+            await self._attach_word_timings(self._word_aligner, audio, segments, captions)
 
         video = await self._composition.render(
             audio=audio,
@@ -191,6 +204,43 @@ class MediaPipeline:
             video=video,
             produced_via=f"media:{self.name}",
         )
+
+    @staticmethod
+    async def _attach_word_timings(
+        aligner: WordAligner,
+        audio: SynthesizedSpeech,
+        segments: list[str],
+        captions: CaptionTrack,
+    ) -> None:
+        """Best-effort word-timing attachment — degrades, never fails the render.
+
+        Requests per-word timings for the narration from the injected
+        `WordAligner` and attaches them to the caption cues (`Caption.words`),
+        which switches `format_ass` onto its karaoke path (ADR 0062). *Any*
+        failure — a missing aeneas install, a non-zero exit, a malformed sync
+        map, a per-segment count mismatch — is logged as a warning and leaves
+        every cue word-free, so the render proceeds with ADR 0059 cue-level
+        captions. The broad ``except Exception`` is deliberate: this is a
+        provider-seam boundary (the TTS router's fallback uses the same
+        posture) and karaoke is an enhancement, never worth failing a render
+        over. Attachment happens only after the full response passes the count
+        check, so a failure can never leave a half-attached track.
+        """
+        try:
+            word_lists = await aligner.align(audio_path=audio.audio_uri, segments=segments)
+            if len(word_lists) != len(captions.cues):
+                raise AlignmentError(
+                    f"aligner returned {len(word_lists)} segment timing lists "
+                    f"for {len(captions.cues)} caption cues"
+                )
+        except Exception:
+            logger.warning(
+                "word alignment failed; captions degrade to cue-level fade (ADR 0062)",
+                exc_info=True,
+            )
+            return
+        for cue, spans in zip(captions.cues, word_lists, strict=True):
+            cue.words = list(spans)
 
     @staticmethod
     def _select_narrative(packet: CreatorPacket, index: int) -> NarrativeOption:
