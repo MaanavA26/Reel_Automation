@@ -138,6 +138,31 @@ def subtitles_filter_available(ffmpeg_bin: str = "ffmpeg") -> bool:
     return False
 
 
+def build_edit_list(*, duration_ms: int, visual_count: int) -> list[tuple[int, int]]:
+    """The rendered cut structure as ordered ``(start_ms, end_ms)`` segments. Pure.
+
+    Mirrors the *equal-slice* layout `build_ffmpeg_args` uses (each visual shown
+    for an equal share of the narration), but at millisecond precision so the
+    `RenderedVideo.edit_list` the QC gate's ``CUT_RHYTHM`` check ranges over tiles
+    ``[0, duration_ms]`` exactly with no rounding drift: segment ``i`` runs
+    ``[round(i*duration/n), round((i+1)*duration/n)]``. A single visual yields one
+    full-length segment (zero cuts); N visuals yield N abutting segments. This is
+    the deterministic, hermetic source of cut rhythm — **not** optical flow or
+    scene detection (ADR 0060).
+    """
+    if visual_count <= 0:
+        raise CompositionError(f"visual_count must be positive, got {visual_count}")
+    if duration_ms < 0:
+        raise CompositionError(f"duration_ms must be non-negative, got {duration_ms}")
+    return [
+        (
+            round(i * duration_ms / visual_count),
+            round((i + 1) * duration_ms / visual_count),
+        )
+        for i in range(visual_count)
+    ]
+
+
 def build_ffmpeg_args(
     *,
     audio_path: Path,
@@ -418,6 +443,12 @@ class FfmpegCompositionService:
             width=width,
             height=height,
             produced_via=f"composition:{self.name}",
+            # Record the deterministic per-visual cut structure (the same equal
+            # slices the argv lays out) so the QC gate can measure cut rhythm
+            # without optical flow (ADR 0060).
+            edit_list=build_edit_list(
+                duration_ms=audio.duration_ms, visual_count=len(visual_paths)
+            ),
         )
 
     def _measure_loudness(self, audio_path: Path) -> LoudnessStats:

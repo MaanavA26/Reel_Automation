@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from app.media.composition.base import CompositionService
 from app.media.composition.ffmpeg import (
     CompositionError,
     FfmpegCompositionService,
+    build_edit_list,
     build_ffmpeg_args,
     resolve_local_path,
 )
@@ -284,6 +286,68 @@ def test_build_rejects_nonpositive_duration() -> None:
 
 def test_satisfies_protocol() -> None:
     assert isinstance(FfmpegCompositionService(), CompositionService)
+
+
+# --- build_edit_list (pure) — the QC cut-rhythm source (ADR 0060) ----------
+
+
+def test_edit_list_single_visual_is_one_full_segment() -> None:
+    # A single visual -> zero cuts -> one segment spanning the whole duration.
+    assert build_edit_list(duration_ms=60_000, visual_count=1) == [(0, 60_000)]
+
+
+def test_edit_list_n_visuals_tile_the_duration_exactly() -> None:
+    segments = build_edit_list(duration_ms=60_000, visual_count=4)
+    assert segments == [(0, 15_000), (15_000, 30_000), (30_000, 45_000), (45_000, 60_000)]
+    # Abutting and covering [0, duration] with no gaps/overlaps.
+    assert segments[0][0] == 0
+    assert segments[-1][1] == 60_000
+    for prev, nxt in pairwise(segments):
+        assert prev[1] == nxt[0]
+
+
+def test_edit_list_rounding_tiles_without_drift() -> None:
+    # 10_000 / 3 does not divide evenly; segments must still abut exactly.
+    segments = build_edit_list(duration_ms=10_000, visual_count=3)
+    assert segments[0][0] == 0
+    assert segments[-1][1] == 10_000
+    for prev, nxt in pairwise(segments):
+        assert prev[1] == nxt[0]
+
+
+def test_edit_list_rejects_zero_visuals() -> None:
+    with pytest.raises(CompositionError, match="visual_count must be positive"):
+        build_edit_list(duration_ms=60_000, visual_count=0)
+
+
+def test_render_populates_edit_list_for_one_visual(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    audio = _audio(duration_ms=6000)
+    with (
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")),
+    ):
+        video = asyncio.run(
+            service.render(audio=audio, captions=_captions(), visual_uris=["/tmp/bg.png"])
+        )
+    assert video.edit_list == [(0, 6000)]
+
+
+def test_render_populates_edit_list_for_n_visuals(tmp_path: Path) -> None:
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    audio = _audio(duration_ms=6000)
+    with (
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", return_value=subprocess.CompletedProcess([], 0, b"", b"")),
+    ):
+        video = asyncio.run(
+            service.render(
+                audio=audio,
+                captions=_captions(),
+                visual_uris=["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"],
+            )
+        )
+    assert video.edit_list == [(0, 2000), (2000, 4000), (4000, 6000)]
 
 
 def test_render_returns_descriptor_and_records_call(tmp_path: Path) -> None:

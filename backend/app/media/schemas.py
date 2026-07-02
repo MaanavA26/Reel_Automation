@@ -89,6 +89,16 @@ class RenderedVideo(BaseModel):
     Descriptor (not the video bytes): the FFmpeg/composition step assembles
     audio + captions + visuals into a single vertical short-form file and
     returns where it lives plus the metadata a publishing step needs.
+
+    ``edit_list`` records the rendered cut structure as ordered, non-overlapping
+    ``(start_ms, end_ms)`` visual segments (the deterministic per-visual equal
+    slices the composition step lays out — see `FfmpegCompositionService.render`).
+    It is the hermetic, optical-flow-free source the QC gate's ``CUT_RHYTHM``
+    check ranges over (ADR 0060): N visuals → N segments tiling ``[0, duration_ms]``;
+    a single visual → one full-length segment (zero cuts). Defaulted to an empty
+    list so existing constructions (the fake renderer, publishing tests) stay
+    valid; an empty list means "cut structure not recorded", which the QC gate
+    treats as a SKIPPED ``CUT_RHYTHM`` rather than a (false) pass.
     """
 
     model_config = _STRICT
@@ -99,3 +109,4 @@ class RenderedVideo(BaseModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     produced_via: str
+    edit_list: list[tuple[int, int]] = Field(default_factory=list)
