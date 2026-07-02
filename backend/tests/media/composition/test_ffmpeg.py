@@ -418,6 +418,10 @@ def test_render_feeds_srt_to_ffmpeg_then_cleans_it_up(tmp_path: Path) -> None:
         return subprocess.CompletedProcess([], 0, b"", b"")
 
     with (
+        # Force the soft-mux path so the transient file is a .srt (this test
+        # asserts SRT content); a libass-enabled local ffmpeg would otherwise
+        # take the burn-in .ass path (ADR 0059).
+        patch("app.media.composition.ffmpeg.subtitles_filter_available", return_value=False),
         patch.object(service, "_measure_loudness", return_value=_loudness()),
         patch.object(service, "_run", side_effect=fake_run),
     ):
@@ -434,10 +438,82 @@ def test_render_feeds_srt_to_ffmpeg_then_cleans_it_up(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.srt")) == []
 
 
-def test_render_cleans_up_srt_on_failure(tmp_path: Path) -> None:
-    """A failed render removes its transient .srt rather than littering output_dir."""
+def test_render_writes_ass_on_burn_in_path_then_cleans_it_up(tmp_path: Path) -> None:
+    """Burn-in path (libass present): captions reach ffmpeg via a styled .ass.
+
+    With the subtitles filter available the render writes a transient .ass (not
+    .srt) so burned-in captions carry the brand styling (ADR 0059), feeds its
+    path to the subtitles= filter, and removes it on a successful return.
+    """
     service = FfmpegCompositionService(output_dir=tmp_path)
-    with patch.object(service, "_run", side_effect=CompositionError("ffmpeg exited with code 1")):
+    captured: dict[str, str] = {}
+
+    def fake_run(args: list[str]) -> subprocess.CompletedProcess[bytes]:
+        ass_path = next(p for p in tmp_path.glob("*.ass"))
+        captured["contents"] = ass_path.read_text(encoding="utf-8")
+        captured["filter"] = args[args.index("-filter_complex") + 1]
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    with (
+        patch("app.media.composition.ffmpeg.subtitles_filter_available", return_value=True),
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", side_effect=fake_run),
+    ):
+        asyncio.run(
+            service.render(
+                audio=_audio(uri="/tmp/a.wav"), captions=_captions(), visual_uris=["/tmp/bg.png"]
+            )
+        )
+
+    # The transient file was an ASS document burned in via subtitles= (auto-detects
+    # .ass), NOT ass=, so the existing filtergraph escaping is untouched.
+    assert "[Script Info]" in captured["contents"]
+    assert "[V4+ Styles]" in captured["contents"]
+    assert "subtitles='" in captured["filter"]
+    assert ".ass'" in captured["filter"]
+    # A successful render leaves only the .mp4 — no .ass (or .srt) litter.
+    assert list(tmp_path.glob("*.ass")) == []
+    assert list(tmp_path.glob("*.srt")) == []
+
+
+def test_render_writes_srt_on_soft_mux_path_then_cleans_it_up(tmp_path: Path) -> None:
+    """Soft-mux fallback (no libass): captions are a plain .srt, since mov_text
+    cannot carry ASS styling (ADR 0059)."""
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    captured: dict[str, str] = {}
+
+    def fake_run(args: list[str]) -> subprocess.CompletedProcess[bytes]:
+        srt_path = next(p for p in tmp_path.glob("*.srt"))
+        captured["contents"] = srt_path.read_text(encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    with (
+        patch("app.media.composition.ffmpeg.subtitles_filter_available", return_value=False),
+        patch.object(service, "_measure_loudness", return_value=_loudness()),
+        patch.object(service, "_run", side_effect=fake_run),
+    ):
+        asyncio.run(
+            service.render(
+                audio=_audio(uri="/tmp/a.wav"), captions=_captions(), visual_uris=["/tmp/bg.png"]
+            )
+        )
+
+    # SRT content, not ASS; no .ass written on this path.
+    assert "00:00:00,000 --> 00:00:02,000" in captured["contents"]
+    assert "[Script Info]" not in captured["contents"]
+    assert list(tmp_path.glob("*.ass")) == []
+    assert list(tmp_path.glob("*.srt")) == []
+
+
+def test_render_cleans_up_transient_subtitle_on_failure(tmp_path: Path) -> None:
+    """A failed render removes its transient subtitle file (either extension)."""
+    service = FfmpegCompositionService(output_dir=tmp_path)
+    with (
+        # Pin the path so the test is deterministic regardless of the local
+        # ffmpeg's libass support (ADR 0059); burn-in writes a .ass.
+        patch("app.media.composition.ffmpeg.subtitles_filter_available", return_value=True),
+        patch.object(service, "_run", side_effect=CompositionError("ffmpeg exited with code 1")),
+    ):
         with pytest.raises(CompositionError):
             asyncio.run(
                 service.render(
@@ -446,7 +522,9 @@ def test_render_cleans_up_srt_on_failure(tmp_path: Path) -> None:
                     visual_uris=["/tmp/bg.png"],
                 )
             )
+    # No subtitle litter of either extension.
     assert list(tmp_path.glob("*.srt")) == []
+    assert list(tmp_path.glob("*.ass")) == []
 
 
 def test_render_echoes_requested_dimensions(tmp_path: Path) -> None:

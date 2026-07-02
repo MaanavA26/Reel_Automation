@@ -18,7 +18,20 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from app.media.schemas import Caption, CaptionTrack
+from app.media.schemas import _RGB_HEX, Caption, CaptionStyle, CaptionTrack
+
+# Canonical V4+ style field order (libass expects this exact 23-field layout in
+# both the [V4+ Styles] `Format:` line and each `Style:` row). Kept as a constant
+# so the formatter and its tests share one source of truth (ADR 0059).
+_ASS_STYLE_FORMAT = (
+    "Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+    "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, "
+    "Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, "
+    "Encoding"
+)
+# Canonical [Events] field order; each `Dialogue:` row matches this layout.
+_ASS_EVENT_FORMAT = "Layer, Start, End, Style, MarginL, MarginR, MarginV, Effect, Text"
+_ASS_STYLE_NAME = "Brand"
 
 
 def _format_timestamp(total_ms: int, *, sep: str) -> str:
@@ -75,6 +88,159 @@ def format_vtt(track: CaptionTrack) -> str:
         end = _format_timestamp(cue.end_ms, sep=".")
         blocks.append(f"{start} --> {end}\n{cue.text}\n")
     return "\n".join(blocks)
+
+
+def _format_ass_timestamp(total_ms: int) -> str:
+    """Render integer milliseconds as ASS ``H:MM:SS.cc`` (centiseconds).
+
+    ASS timestamps differ from SRT/VTT: a **single**-digit (un-padded, but not
+    capped) hour, and **centiseconds** (2 digits) rather than milliseconds.
+    `_format_timestamp` cannot be reused — it emits 2-digit hours and 3-digit ms.
+
+    ms->cc is **truncated**, not rounded (locked decision, ADR 0059): ``cc =
+    (total_ms % 1000) // 10``. Truncation always yields 0-99 and so can never
+    overflow into a second-carry; rounding could push e.g. 995 ms to ``round(99.5)
+    = 100``, which would need carry logic and is silently wrong without it. The
+    sub-10 ms loss is inaudible/invisible at caption granularity.
+    """
+    if total_ms < 0:
+        raise ValueError(f"timestamp must be non-negative, got {total_ms}")
+    centis = (total_ms % 1000) // 10
+    total_seconds = total_ms // 1000
+    seconds = total_seconds % 60
+    total_minutes = total_seconds // 60
+    minutes = total_minutes % 60
+    hours = total_minutes // 60
+    return f"{hours:d}:{minutes:02d}:{seconds:02d}.{centis:02d}"
+
+
+def _ass_colour(rgb_hex: str) -> str:
+    """Convert a ``#RRGGBB`` hex colour to ASS ``&HAABBGGRR`` (opaque).
+
+    ASS colours are **inverted-alpha, BGR-ordered**: the byte order is alpha,
+    blue, green, red, and alpha ``00`` means fully **opaque** (``FF`` is fully
+    transparent). Captions are always opaque, so alpha is fixed at ``00``. E.g.
+    ``#123456`` (R=12 G=34 B=56) → ``&H00563412``.
+
+    Requires **exactly one** leading ``#`` and **exactly six** hex digits (shared
+    `_RGB_HEX` shape): ``123456`` (no ``#``), ``##123456`` (double ``#``),
+    ``#12345`` (short), and ``#GGGGGG`` (non-hex) all raise. Do not use
+    ``lstrip('#')`` — it silently accepts the ``#``-less and double-``#`` forms.
+    """
+    if not _RGB_HEX.match(rgb_hex):
+        raise ValueError(f"colour must be `#RRGGBB` hex, got {rgb_hex!r}")
+    s = rgb_hex[1:]
+    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    return f"&H00{b:02X}{g:02X}{r:02X}"
+
+
+def _escape_ass_text(text: str) -> str:
+    r"""Neutralize ASS override characters in cue text by **replacement**.
+
+    In ASS, ``{`` opens an override block, ``}`` closes it, and ``\`` introduces
+    an override/special (``\N`` newline, ``\h`` hard space). There is no reliable
+    literal-brace escape — outside ``{}`` a backslash is passed through but the
+    brace still opens a block, so ``\{`` does NOT neutralize it. We therefore
+    **replace** these characters with safe lookalikes (fullwidth braces, a plain
+    forward slash) rather than backslash-escaping; this also makes escape-ordering
+    irrelevant. Newlines collapse to a space (cue segmentation owns line breaks).
+    """
+    return (
+        text.replace("\\", "/")
+        .replace("{", "｛")  # noqa: RUF001 (fullwidth brace is the deliberate safe replacement)
+        .replace("}", "｝")  # noqa: RUF001 (fullwidth brace is the deliberate safe replacement)
+        .replace("\r\n", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
+
+
+def format_ass(
+    track: CaptionTrack,
+    *,
+    style: CaptionStyle,
+    width: int,
+    height: int,
+) -> str:
+    r"""Render a `CaptionTrack` as Advanced SubStation Alpha (`.ass`) text.
+
+    The styled burned-in-caption format (ADR 0059): unlike SRT/VTT it carries a
+    font, colours, an outline, alignment, margins, and a per-cue fade — the
+    engagement-quality look short-form needs. ``width``/``height`` are the real
+    output frame, written as ``PlayResX``/``PlayResY`` so the font size and
+    margins scale to the actual resolution rather than a phantom 384x288 default.
+
+    Layout:
+
+    * ``[Script Info]`` pins the script type, the play resolution,
+      ``ScaledBorderAndShadow: yes`` (outline scales with the frame), and a
+      ``WrapStyle`` that prefers balanced wrapping.
+    * ``[V4+ Styles]`` is one brand row built from `style`: colours converted to
+      ASS ``&HAABBGGRR`` via `_ass_colour`, alignment 2 (bottom-centre), and
+      ``MarginL``/``MarginR`` = ``round(margin_fraction * width)`` with a
+      ``MarginV`` placing text in the bottom third.
+    * ``[Events]`` is one ``Dialogue:`` per cue; each cue's text is prefixed with
+      a cue-level ``{\fad(in,out)}`` override, then the (escaped) cue text.
+
+    Honesty (ADR 0059): this is **cue-level fade only** — NOT the word-level
+    karaoke "animated captions" of the references; that is deferred (§D2). Line
+    count (≤2) is **not** guaranteed here — ``WrapStyle`` + margins bias toward it
+    but real wrapping needs font metrics and upstream cue segmentation. The
+    output is never visually validated hermetically (no libass in CI); the unit
+    tests assert the ASS *text* shape, and a real-render check is a last-mile
+    follow-up.
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError(f"width/height must be positive, got {width}x{height}")
+    _validate_cues(track.cues)
+
+    margin_lr = round(style.margin_fraction * width)
+    # Bottom-third vertical margin: lift the (bottom-anchored, alignment 2) text
+    # off the very edge into the lower third of the frame. A deterministic,
+    # resolution-relative value (not pinned by any test; documented here).
+    margin_v = round(height * 0.06)
+    primary = _ass_colour(style.primary_colour)
+    outline = _ass_colour(style.outline_colour)
+    # BackColour (shadow) reuses the outline colour, fully opaque.
+    back = outline
+
+    # One style row, fields in the exact _ASS_STYLE_FORMAT order (23 fields):
+    # Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
+    # BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing,
+    # Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV,
+    # Encoding. Bold=-1 (ASS true), BorderStyle=1 (outline+shadow), Alignment=2.
+    style_row = (
+        f"Style: {_ASS_STYLE_NAME},{style.font_name},{style.font_size},"
+        f"{primary},{primary},{outline},{back},"
+        f"-1,0,0,0,100,100,0,0,1,{style.outline_width:g},0,2,"
+        f"{margin_lr},{margin_lr},{margin_v},1"
+    )
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        f"Format: {_ASS_STYLE_FORMAT}",
+        style_row,
+        "",
+        "[Events]",
+        f"Format: {_ASS_EVENT_FORMAT}",
+    ]
+
+    fade = f"{{\\fad({style.fade_in_ms},{style.fade_out_ms})}}"
+    for cue in track.cues:
+        start = _format_ass_timestamp(cue.start_ms)
+        end = _format_ass_timestamp(cue.end_ms)
+        text = fade + _escape_ass_text(cue.text)
+        # Per-cue margins are 0,0,0 -> inherit the Style row's real margins.
+        lines.append(f"Dialogue: 0,{start},{end},{_ASS_STYLE_NAME},0,0,0,,{text}")
+
+    return "\n".join(lines) + "\n"
 
 
 @runtime_checkable
