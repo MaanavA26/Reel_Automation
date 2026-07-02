@@ -60,6 +60,25 @@ class SynthesizedSpeech(BaseModel):
     produced_via: str
 
 
+class WordSpan(BaseModel):
+    """A single word's timing within a caption cue (word-level karaoke, ADR 0062).
+
+    Times are **integer milliseconds** on the same absolute narration clock as
+    the owning `Caption` (not cue-relative), produced by a `WordAligner`
+    (forced alignment — `app.media.alignment`) and consumed by `format_ass`'s
+    karaoke emission. ``text`` mirrors `Caption.text` naming; it is the
+    whitespace token the aligner timed (punctuation stays attached). Like
+    `Caption`, ``end_ms >= start_ms`` is enforced by the formatter, not the
+    DTO, so partially-built spans remain representable.
+    """
+
+    model_config = _STRICT
+
+    text: str
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(ge=0)
+
+
 class Caption(BaseModel):
     """A single timed caption cue (one subtitle line group).
 
@@ -67,6 +86,12 @@ class Caption(BaseModel):
     ms→timestamp formatting exact and rounding-free. ``end_ms >= start_ms`` is
     enforced by the formatter, not the DTO, so partially-built tracks remain
     representable.
+
+    ``words`` optionally carries per-word timings (forced alignment, ADR 0062).
+    It is **additive and default-empty** so every existing construction stays
+    valid: when non-empty, `format_ass` renders the cue as word-level karaoke
+    (the word spans become the rendered text); when empty, the cue renders as
+    the ADR 0059 cue-level fade. The plain SRT/VTT formatters ignore it.
     """
 
     model_config = _STRICT
@@ -74,6 +99,7 @@ class Caption(BaseModel):
     start_ms: int = Field(ge=0)
     end_ms: int = Field(ge=0)
     text: str
+    words: list[WordSpan] = Field(default_factory=list)
 
 
 class CaptionTrack(BaseModel):
@@ -131,9 +157,13 @@ class CaptionStyle(BaseModel):
     symmetric fade, and a 10% left/right safe-margin so text never kisses the
     frame edge.
 
-    This object describes **cue-level** styling only: a single fade per cue. It
-    does NOT model word-level karaoke ("animated captions"); that is a separate
-    future step (ADR 0059 §D2).
+    ``secondary_colour`` is the karaoke **pre-highlight** fill (ADR 0062): when
+    a cue carries word timings, `format_ass` emits per-word ``\\kf`` sweeps and
+    libass fills each word from SecondaryColour to PrimaryColour as it is sung,
+    so unsung words read dimmed. On a track with **no** word timings the style
+    row keeps SecondaryColour equal to PrimaryColour, byte-stable with the
+    ADR 0059 cue-fade output (the secondary only manifests through karaoke
+    tags, so this is purely a text-stability choice).
 
     Unlike the other media DTOs this model is **frozen** (`frozen=True`): it is a
     styling value object and the module-level `DEFAULT_CAPTION_STYLE` is a shared
@@ -149,6 +179,9 @@ class CaptionStyle(BaseModel):
     font_size: int = Field(default=72, gt=0)
     # #RRGGBB hex; converted to ASS &HAABBGGRR by format_ass.
     primary_colour: str = "#FFFFFF"
+    # Karaoke pre-highlight fill (unsung words) — used only when a track carries
+    # word timings; see the class docstring and ADR 0062.
+    secondary_colour: str = "#808080"
     outline_colour: str = "#000000"
     outline_width: float = Field(default=3.0, ge=0)
     fade_in_ms: int = Field(default=120, ge=0)
@@ -177,7 +210,7 @@ class CaptionStyle(BaseModel):
             )
         return value
 
-    @field_validator("primary_colour", "outline_colour")
+    @field_validator("primary_colour", "secondary_colour", "outline_colour")
     @classmethod
     def _validate_colour(cls, value: str) -> str:
         """Require exactly one leading ``#`` followed by exactly six hex digits."""

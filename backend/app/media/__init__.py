@@ -2,7 +2,8 @@
 
 Provider-neutral *tool/service* seams (CLAUDE.md §4 — media work is
 deterministic execution, never agents) for the media-making pipeline: TTS,
-subtitle generation, and composition/FFmpeg assembly. This package is a
+subtitle generation, word-level forced alignment, and composition/FFmpeg
+assembly. This package is a
 **bounded scaffold** (CLAUDE.md §7/§13): it establishes the interfaces, typed
 artifact DTOs, hermetic fakes, and the one piece of real deterministic logic
 (SRT/VTT formatting). Concrete adapters (ElevenLabs, Veo, real ffmpeg) and the
