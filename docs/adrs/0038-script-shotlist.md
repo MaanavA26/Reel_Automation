@@ -4,7 +4,8 @@
 - **Date:** 2026-06-05
 - **Deciders:** Tech Lead, Council (advisor)
 - **Supersedes:** none
-- **Superseded by:** none
+- **Superseded by:** 0061 (the hook → body → CTA script shape; the tool /
+  shot-list design otherwise stands)
 
 ## Context
 
