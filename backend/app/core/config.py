@@ -150,6 +150,19 @@ class Settings(BaseSettings):
     kokoro_model_path: str = "kokoro-v1.0.onnx"
     kokoro_voices_path: str = "voices-v1.0.bin"
 
+    # Real word-level forced alignment (ADR 0062, wired ADR 0063). `aeneas` is an
+    # external subprocess contract (module docstring of `media.alignment.aeneas`),
+    # never a pip dependency of this repo, so it is provisioned the same way as
+    # Kokoro's model files: a bare path setting, `None` by default. When set, the
+    # composition root points `AeneasAligner` at this interpreter (an environment
+    # with aeneas + eSpeak installed — any venv is fine) and wires it into
+    # `MediaPipeline` for word-level karaoke captions. `None` (the default) leaves
+    # `word_aligner=None` — identical to the pre-ADR-0063 behavior (cue-level
+    # captions only). No further validation beyond what Pydantic gives for free —
+    # it is just a path string; a bad path surfaces as an `AlignmentError` at
+    # align time, not at settings load time.
+    aeneas_python_bin: str | None = None
+
     # NVIDIA TTS NIM backend (ADR 0047, optional fallback). Wired into the router
     # only when `nvidia_tts_api_key` is set; reuses the operator's NVIDIA build
     # key but on the *speech* endpoint (a distinct base_url from the LLM NIM).

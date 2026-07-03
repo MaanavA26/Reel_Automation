@@ -53,6 +53,8 @@ from app.agents.synthesis import SynthesisAgent
 from app.agents.tts_supervisor import TTSSupervisorAgent
 from app.core.config import Settings, get_settings
 from app.core.lifecycle import AsyncClosable
+from app.media.alignment.aeneas import AeneasAligner
+from app.media.alignment.base import WordAligner
 from app.media.composition.base import CompositionService
 from app.media.composition.ffmpeg import FfmpegCompositionService
 from app.media.tts.base import TTSProvider
@@ -359,6 +361,10 @@ class MediaDeps:
     `SubtitleService` is intentionally *not* in this bundle: it is pure, hermetic
     shipping code that `MediaPipeline` defaults to internally
     (`DeterministicSubtitleService`), exactly as ingestion defaults its PDF parser.
+    ``word_aligner`` (ADR 0062/0063) is optional and ``None`` by default — a live
+    `AeneasAligner` joins only when ``settings.aeneas_python_bin`` is set, exactly
+    mirroring how ``visuals``/``visual_sink`` join only when ``stock_api_key`` is
+    set; ``None`` reproduces the pre-ADR-0063 cue-level-only behavior.
     """
 
     tts: TTSProvider
@@ -371,6 +377,11 @@ class MediaDeps:
     # closed by the composition root, but not yet consumed by the render path
     # (which still uses ``visuals`` retrieval); the documented ADR 0053 follow-up.
     generative_visuals: GenerativeVisualProvider | None = None
+    # Real word-level forced alignment (ADR 0062, wired ADR 0063): `None` unless
+    # `settings.aeneas_python_bin` is set, in which case it is a live
+    # `AeneasAligner` pointed at that interpreter. `MediaPipeline` degrades to
+    # cue-level captions whenever this is `None` — never a hard requirement.
+    word_aligner: WordAligner | None = None
 
 
 @dataclass(frozen=True)
@@ -491,6 +502,11 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
       remote uri would raise in `resolve_local_path`). Both are ``None`` when no
       stock key is set; a live render then has no visual and fails loudly in
       ffmpeg (the honest behavior, not a silent default).
+    * An `AeneasAligner` (ADR 0062, wired here per ADR 0063) when
+      ``aeneas_python_bin`` is set — real word-level forced alignment for
+      karaoke captions. ``None`` (the default, no setting required) leaves
+      `MediaPipeline`'s ``word_aligner`` unset, i.e. today's cue-level-only
+      captions, unchanged.
 
     The TTS supervisor needs a `ModelRouter` (the §4 judgment seam), so this
     builder mints its own (via `_build_router`) — an unconfigured model backend
@@ -540,6 +556,14 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
     if isinstance(generative_visuals, AsyncClosable):
         closables.append(generative_visuals)
 
+    # Optional real word-level forced alignment (ADR 0062, wired ADR 0063):
+    # ``None`` unless an aeneas-provisioned interpreter is configured. aeneas owns
+    # no httpx client (a subprocess contract, not a network seam), so it adds
+    # nothing to ``closables``.
+    word_aligner: WordAligner | None = None
+    if resolved.aeneas_python_bin:
+        word_aligner = AeneasAligner(python_bin=resolved.aeneas_python_bin)
+
     deps = MediaDeps(
         tts=tts,
         composition=composition,
@@ -547,6 +571,7 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
         visual_sink=visual_sink,
         voice=resolved.tts_voice,
         generative_visuals=generative_visuals,
+        word_aligner=word_aligner,
     )
     return MediaBundle(deps=deps, closables=tuple(closables))
 

@@ -39,7 +39,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.media.alignment.base import AlignmentError, WordAligner
 from app.media.composition.base import CompositionService
-from app.media.schemas import CaptionTrack, RenderedVideo, SynthesizedSpeech, _gen_id
+from app.media.schemas import (
+    DEFAULT_CAPTION_STYLE,
+    CaptionStyle,
+    CaptionTrack,
+    RenderedVideo,
+    SynthesizedSpeech,
+    _gen_id,
+)
 from app.media.subtitles.base import DeterministicSubtitleService, SubtitleService
 from app.media.tts.base import TTSProvider
 from app.schemas.research_state import CreatorPacket, NarrativeOption
@@ -162,18 +169,32 @@ class MediaPipeline:
         *,
         narrative_index: int = 0,
         visual_uris: list[str] | None = None,
+        segments: list[str] | None = None,
+        caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     ) -> MediaPlan:
         """Assemble a `MediaPlan` from the packet's chosen narrative.
 
         Picks ``packet.narratives[narrative_index]`` (deterministic selection —
-        ranking would be judgment, which §4 bars from this tool), splits its
-        ``script_outline`` into non-blank beats, synthesizes the joined narration
-        once, allocates caption timings across the beats, builds the caption
-        track, and composes. Raises `MediaPipelineError` if the packet has no
-        narrative at that index or the chosen narrative has no narratable beat.
+        ranking would be judgment, which §4 bars from this tool) for its title and
+        (absent an explicit ``segments`` override) its narration source.
+
+        ``segments`` (ADR 0063) is the ordered list of narration/caption texts to
+        render. When omitted (``None``, the default) the pipeline falls back to
+        its original behavior: splitting the narrative's ``script_outline`` into
+        non-blank lines via `_split_into_beats` — unchanged for any caller that
+        does not pass beats explicitly. The caller (`VideoPipeline`) instead
+        passes the full `ScriptBuilder`-produced HOOK→BUILD→PAYOFF→LOOP beat texts,
+        so the pipeline narrates/captions the whole retention arc rather than only
+        the narrative's own outline lines. Either way, the resulting segments are
+        synthesized once, caption timings are allocated across them, the caption
+        track is built, and the video is composed with ``caption_style`` (ADR
+        0059) passed through to `CompositionService.render`. Raises
+        `MediaPipelineError` if the packet has no narrative at that index or the
+        resulting segments are empty.
         """
         narrative = self._select_narrative(packet, narrative_index)
-        segments = _split_into_beats(narrative.script_outline)
+        if segments is None:
+            segments = _split_into_beats(narrative.script_outline)
         if not segments:
             raise MediaPipelineError(
                 f"narrative {narrative.title!r} produced no narratable script segments"
@@ -193,6 +214,7 @@ class MediaPipeline:
             audio=audio,
             captions=captions,
             visual_uris=list(visual_uris or []),
+            caption_style=caption_style,
         )
 
         return MediaPlan(

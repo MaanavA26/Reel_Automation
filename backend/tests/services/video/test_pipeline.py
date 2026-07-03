@@ -7,10 +7,13 @@ network, no LLM, no ffmpeg, no PyPI — this proves the whole topic → finished
 video-artifact path with zero external dependencies.
 
 The crucial seam this exercises that the per-subsystem tests do not: the
-research-side fake **must** produce a `CreatorPacket` carrying a narratable
-`NarrativeOption`, or the media layer has nothing to render. So the fake
-strategist scripts a narrative with a multi-line script outline, and the test
-asserts the produced video's metadata is coherent with that narrative.
+research-side fake **must** produce a `CreatorPacket` carrying both a `HookIdea`
+and a narratable `NarrativeOption` (ADR 0063 — `ScriptBuilder` needs a hook to
+open the arc; the media layer alone would settle for the narrative), or the
+pipeline has nothing to script. So the fake strategist scripts a hook plus a
+multi-line narrative outline, and the tests assert the produced video's metadata
+— and, for the full-arc regression test, its actual narrated segments — are
+coherent with both.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import pytest
 
 from app.agents.creator_packet import (
     CreatorPacketAgent,
+    _HookDraft,
     _NarrativeDraft,
     _PacketOutput,
 )
@@ -47,11 +51,13 @@ from app.agents.source_discovery import (
     _DiscoveryQuery,
 )
 from app.agents.synthesis import SynthesisAgent, _FindingDraft, _SynthesisOutput
+from app.media.alignment.base import FakeWordAligner
 from app.media.composition.base import FakeCompositionService
-from app.media.pipeline import MediaPipelineError
+from app.media.schemas import DEFAULT_CAPTION_STYLE, CaptionStyle
 from app.media.tts.base import FakeTTSProvider
 from app.media.visuals.base import FakeVisualProvider, VisualClip, VisualKind
 from app.schemas.research_state import SourceType, SupportLevel
+from app.scripting.builder import DEFAULT_LOOP_TEXT, ScriptBuilderError
 from app.services.composition import MediaDeps
 from app.services.ingestion.base import FetchedContent
 from app.services.ingestion.fakes import FakeFetchProvider
@@ -160,14 +166,21 @@ def _reporter() -> ReportAgent:
     )
 
 
-# The seam that must be right: the strategist produces a NARRATIVE (not just a
-# hook), so the creator packet is narratable and the media layer has a script.
-_NARRATIVE_OUTLINE = "Hook line\nBody beat one\nClosing call to action"
+# The seam that must be right: the strategist produces both a HOOK and a
+# NARRATIVE, so the creator packet is scriptable end to end (ADR 0063 makes
+# `packet.hooks` load-bearing — `ScriptBuilder` needs one to open the arc).
+_HOOK_TEXT = "Scroll-stopping hook"
+_NARRATIVE_OUTLINE = "Body beat one\nClosing call to action"
 
 
-def _strategist(outline: str = _NARRATIVE_OUTLINE) -> CreatorPacketAgent:
+def _strategist(
+    outline: str = _NARRATIVE_OUTLINE, *, hooks: list[_HookDraft] | None = None
+) -> CreatorPacketAgent:
+    if hooks is None:
+        hooks = [_HookDraft(text=_HOOK_TEXT, findings=[0])]
     output = _PacketOutput(
-        narratives=[_NarrativeDraft(title="Why it matters", script_outline=outline, findings=[0])]
+        hooks=hooks,
+        narratives=[_NarrativeDraft(title="Why it matters", script_outline=outline, findings=[0])],
     )
     return CreatorPacketAgent(
         ModelRouter(
@@ -220,6 +233,78 @@ def test_topic_to_video_artifact_end_to_end() -> None:
     assert artifact.research_state_id
     assert artifact.creator_packet_id
     assert artifact.media_plan_id
+
+
+def test_pipeline_narrates_the_full_hook_build_payoff_loop_arc() -> None:
+    """The load-bearing regression test for ADR 0063 (issue #149).
+
+    Before this change, `MediaPipeline` derived its narration segments directly
+    from `narrative.script_outline` — the hook (which lives only in
+    `packet.hooks`) and the closing loop re-hook were never spoken or captioned;
+    only the BUILD/PAYOFF outline lines were. Now `VideoPipeline.create_bundle`
+    runs the packet through `ScriptBuilder` first and feeds the *full* arc's beat
+    texts to the media layer. This asserts the after-state directly against the
+    produced `MediaPlan.script_segments`: the hook text leads, the two outline
+    lines follow in order, and the default LOOP text closes it out.
+    """
+    pipeline = VideoPipeline(_research_deps(), _media_deps())
+    bundle = asyncio.run(pipeline.create_bundle("fusion energy"))
+
+    segments = bundle.media_plan.script_segments
+    assert segments == [
+        _HOOK_TEXT,  # HOOK — new: previously never narrated
+        "Body beat one",  # BUILD
+        "Closing call to action",  # PAYOFF (the outline's last line)
+        DEFAULT_LOOP_TEXT,  # LOOP — new: previously never narrated
+    ]
+    # The caption track and audio cover the same 4-segment arc (ADR 0025 invariant).
+    assert len(bundle.media_plan.captions.cues) == len(segments)
+
+
+def test_pipeline_threads_caption_style_through_to_composition() -> None:
+    composition = FakeCompositionService()
+    pipeline = VideoPipeline(
+        _research_deps(),
+        MediaDeps(tts=FakeTTSProvider(ms_per_char=10), composition=composition),
+    )
+    style = CaptionStyle(font_name="Impact", font_size=64)
+    asyncio.run(pipeline.create("topic", caption_style=style))
+    assert composition.calls[0].caption_style == style
+
+
+def test_pipeline_default_caption_style_is_unchanged() -> None:
+    composition = FakeCompositionService()
+    pipeline = VideoPipeline(
+        _research_deps(),
+        MediaDeps(tts=FakeTTSProvider(ms_per_char=10), composition=composition),
+    )
+    asyncio.run(pipeline.create("topic"))
+    assert composition.calls[0].caption_style is DEFAULT_CAPTION_STYLE
+
+
+def test_pipeline_wires_word_aligner_from_media_deps() -> None:
+    # MediaDeps.word_aligner (ADR 0063) must actually reach the MediaPipeline
+    # this pipeline constructs, not just sit unused on the bundle.
+    aligner = FakeWordAligner(ms_per_word=50)
+    pipeline = VideoPipeline(
+        _research_deps(),
+        MediaDeps(
+            tts=FakeTTSProvider(ms_per_char=10),
+            composition=FakeCompositionService(),
+            word_aligner=aligner,
+        ),
+    )
+    bundle = asyncio.run(pipeline.create_bundle("topic"))
+    assert len(aligner.calls) == 1
+    assert all(len(cue.words) > 0 for cue in bundle.media_plan.captions.cues)
+
+
+def test_pipeline_default_media_deps_leaves_word_aligner_unset() -> None:
+    # MediaDeps.word_aligner defaults to None -> MediaPipeline gets word_aligner
+    # =None -> today's cue-level-only behavior, unchanged.
+    pipeline = VideoPipeline(_research_deps(), _media_deps())
+    bundle = asyncio.run(pipeline.create_bundle("topic"))
+    assert all(cue.words == [] for cue in bundle.media_plan.captions.cues)
 
 
 def test_pipeline_passes_narrative_through_to_composition() -> None:
@@ -297,11 +382,10 @@ def test_pipeline_bridges_visuals_through_the_sink() -> None:
 
 def test_pipeline_raises_when_research_yields_unnarratable_packet() -> None:
     # A strategist that emits no narrative -> the creator packet has no narrative
-    # to render. The media layer raises MediaPipelineError; the pipeline does not
-    # swallow it. (The CreatorPacketAgent itself requires *some* resolvable
-    # element, so we give it a hook but no narrative.)
-    from app.agents.creator_packet import _HookDraft
-
+    # to render. `VideoPipeline`'s own narrative-selection guard raises before
+    # either ScriptBuilder or the media layer ever runs. (The CreatorPacketAgent
+    # itself requires *some* resolvable element, so we give it a hook but no
+    # narrative.)
     hook_only = CreatorPacketAgent(
         ModelRouter(
             providers={
@@ -360,11 +444,23 @@ def test_artifact_revalidates_strict() -> None:
     assert VideoArtifact.model_validate(artifact.model_dump())
 
 
-# Sanity: the media layer's own empty-narrative error type is the one that
-# surfaces for an all-blank script (documents the boundary the pipeline relies on).
-def test_blank_narrative_surfaces_media_error() -> None:
+# Sanity: since ADR 0063, `ScriptBuilder` runs before the media layer ever sees
+# the narrative, so it is now the *scripting* layer's own empty-narrative error
+# that surfaces for an all-blank outline (documents the boundary shift: this used
+# to be `MediaPipelineError` — see git history — because the media layer split
+# `script_outline` itself; it now receives ScriptBuilder's beat texts instead).
+def test_blank_narrative_surfaces_script_builder_error() -> None:
     pipeline = VideoPipeline(_research_deps(_strategist("   \n  \n")), _media_deps())
-    with pytest.raises(MediaPipelineError, match="no narratable script segments"):
+    with pytest.raises(ScriptBuilderError, match="no narratable script beats"):
+        asyncio.run(pipeline.create("topic"))
+
+
+# New failure mode introduced by ADR 0063: ScriptBuilder needs a hook to open the
+# arc, so a narratable-but-hookless packet (which used to render narrative-only)
+# now hard-fails instead of silently skipping the hook.
+def test_packet_with_narrative_but_no_hooks_raises_script_builder_error() -> None:
+    pipeline = VideoPipeline(_research_deps(_strategist(hooks=[])), _media_deps())
+    with pytest.raises(ScriptBuilderError, match="no hooks to open with"):
         asyncio.run(pipeline.create("topic"))
 
 

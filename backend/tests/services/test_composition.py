@@ -331,3 +331,32 @@ def test_filesystem_visual_sink_passes_local_uris_through() -> None:
     # A bare path / file:// uri is already local — returned unchanged, no fetch.
     assert sink("/tmp/clip.mp4") == "/tmp/clip.mp4"
     assert sink("file:///tmp/clip.mp4") == "file:///tmp/clip.mp4"
+
+
+# --- Word aligner wiring (ADR 0062, wired ADR 0063) --------------------------
+
+
+def test_no_aeneas_python_bin_leaves_word_aligner_unset(tmp_path: object) -> None:
+    # The regression guard: aeneas_python_bin unset (the default) -> MediaDeps
+    # ends up with word_aligner=None, identical to the pre-ADR-0063 behavior.
+    deps = build_media_deps(_settings(media_output_dir=str(tmp_path))).deps
+    assert deps.word_aligner is None
+
+
+def test_aeneas_python_bin_set_wires_a_real_aligner(tmp_path: object) -> None:
+    # Setting aeneas_python_bin constructs a real AeneasAligner pointed at that
+    # interpreter and wires it into MediaDeps — no real aeneas install needed to
+    # *construct* it (only to run `.align`, which this test never calls).
+    from app.media.alignment.aeneas import AeneasAligner
+
+    bundle = build_media_deps(
+        _settings(
+            media_output_dir=str(tmp_path),
+            aeneas_python_bin="/opt/aeneas-venv/bin/python3",
+        )
+    )
+    assert isinstance(bundle.deps.word_aligner, AeneasAligner)
+    assert bundle.deps.word_aligner._python_bin == "/opt/aeneas-venv/bin/python3"  # type: ignore[attr-defined]
+    # aeneas is a subprocess contract, not a network seam -> no new closable (same
+    # count as the Kokoro-only, no-aeneas keystone bundle for an identical config).
+    assert len(bundle.closables) == 1
