@@ -40,3 +40,9 @@ def test_backoff_factor_below_one_rejected() -> None:
 def test_inverted_delay_ladder_rejected() -> None:
     with pytest.raises(ValidationError, match="llm_retry_max_delay"):
         Settings(llm_retry_base_delay=30.0, llm_retry_max_delay=5.0)
+
+
+def test_aeneas_python_bin_defaults_to_none() -> None:
+    # Unset by default (ADR 0062/0063): the composition root leaves
+    # MediaPipeline's word_aligner unset unless an operator opts in.
+    assert Settings().aeneas_python_bin is None

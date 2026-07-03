@@ -17,6 +17,20 @@ must raise a clear `VideoPipelineError` rather than index into an empty
 ``packets`` list. The packet's ``narratives`` are then the media layer's concern
 (`MediaPipeline` raises `MediaPipelineError` if the chosen narrative is empty).
 
+The full retention arc, not just the outline (ADR 0063)
+---------------------------------------------------------
+`create_bundle` also runs the packet through `ScriptBuilder` (a pure,
+deterministic tool, CLAUDE.md §4 — no LLM, no I/O) to assemble the 4-beat
+HOOK → BUILD → PAYOFF → LOOP arc (ADR 0061), and passes the resulting beat texts
+to `MediaPipeline.build` as its narration ``segments``. Previously the media
+layer read only the narrative's own ``script_outline`` lines — the hook (which
+lives solely in `CreatorPacket.hooks`) and the closing loop re-hook were
+produced but never spoken or captioned. This is the integration point ADR 0061
+deferred; it is a **real, visible behavior change**: renders are longer, and the
+hook/loop beats are now narrated. It also makes `packet.hooks` load-bearing —
+a well-formed packet has at least one hook (§5.4), but a hookless packet (that
+previously rendered narrative-only) now raises `ScriptBuilderError` instead.
+
 Dependency injection
 ---------------------
 Both collaborator bundles are injected (`ResearchDeps`, `MediaDeps`) so the whole
@@ -40,6 +54,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.config import Settings, get_settings
 from app.core.lifecycle import AsyncClosable
 from app.media.pipeline import MediaPipeline, MediaPlan
+from app.media.schemas import DEFAULT_CAPTION_STYLE, CaptionStyle
 from app.schemas.research_state import (
     CreatorPacket,
     JobStatus,
@@ -47,6 +62,7 @@ from app.schemas.research_state import (
     Report,
     ResearchState,
 )
+from app.scripting.builder import ScriptBuilder
 from app.services.composition import (
     MediaDeps,
     build_media_deps,
@@ -79,10 +95,12 @@ _DEFAULT_VISUAL_LIMIT = 3
 class VideoPipelineError(RuntimeError):
     """Raised when the topic cannot be turned into a finished video.
 
-    The single failure type for the end-to-end path: a research run that failed
-    or produced no narratable creator packet. Media-side failures surface as the
-    media layer's own `MediaPipelineError`/`CompositionError` (not re-wrapped, so
-    the original cause stays legible), and wiring failures as `CompositionError`.
+    The failure type for the pipeline's *own* handoff guard: a research run that
+    failed or produced no narratable creator packet. Downstream failures surface
+    as their own originating type, not re-wrapped (so the cause stays legible):
+    `ScriptBuilderError` if the packet has no hooks/narrative to script (ADR
+    0063), `MediaPipelineError`/`CompositionError` for media-side failures, and
+    `CompositionError` for wiring failures.
     """
 
 
@@ -143,8 +161,11 @@ class VideoPipeline:
 
     Constructor DI mirrors `MediaPipeline`/`IngestionService`: the research and
     media collaborator bundles are required; a `MediaPipeline` is built over the
-    injected `MediaDeps`. ``max_syntheses`` is the research revision-loop cap,
-    forwarded to `run_research` (the same knob the API exposes).
+    injected `MediaDeps` (including its optional ``word_aligner``, ADR 0063).
+    ``max_syntheses`` is the research revision-loop cap, forwarded to
+    `run_research` (the same knob the API exposes). A `ScriptBuilder` (pure,
+    stateless — CLAUDE.md §4) assembles the full retention arc per run; it needs
+    no injection since it is deterministic and has no collaborators of its own.
     """
 
     name = "video"
@@ -163,13 +184,16 @@ class VideoPipeline:
             media_deps.tts,
             media_deps.composition,
             voice=media_deps.voice,
+            word_aligner=media_deps.word_aligner,
         )
+        self._script_builder = ScriptBuilder()
 
     async def create(
         self,
         topic: str,
         *,
         narrative_index: int = 0,
+        caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     ) -> VideoArtifact:
         """Run the full topic → finished video path and return the artifact.
 
@@ -177,10 +201,14 @@ class VideoPipeline:
         to the serializable `VideoArtifact`. The rich upstream objects (report,
         packet, rendered video) are dropped here — the API returns ids + uri — and
         retained only for the downstream publish path via `create_bundle`. Raises
-        `VideoPipelineError` if research failed or produced no packet; media-side
-        failures propagate as `MediaPipelineError`/`CompositionError`.
+        `VideoPipelineError` if research failed or produced no packet;
+        `ScriptBuilderError` if the packet has no hooks/narrative to script (ADR
+        0063); media-side failures propagate as
+        `MediaPipelineError`/`CompositionError`.
         """
-        bundle = await self.create_bundle(topic, narrative_index=narrative_index)
+        bundle = await self.create_bundle(
+            topic, narrative_index=narrative_index, caption_style=caption_style
+        )
         return bundle.artifact
 
     async def create_bundle(
@@ -188,17 +216,24 @@ class VideoPipeline:
         topic: str,
         *,
         narrative_index: int = 0,
+        caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     ) -> ProducedVideo:
         """Run the full path and return the artifact **plus** its upstream objects.
 
         Steps: (1) run Deep Research to a terminal `ResearchState`; (2) guard that
         it completed with a narratable creator packet; (3) optionally retrieve
-        B-roll for the chosen narrative; (4) build the `MediaPlan` via the media
-        pipeline; (5) project it into a `VideoArtifact` and bundle it with the
-        `Report` (resolved by ``packet.report_id``) + `CreatorPacket` + `MediaPlan`
-        the downstream `PrePublishGate`/publisher need. `create` wraps this and
-        returns only the artifact; the closed-loop runner (ADR 0054) consumes the
-        full bundle. Same error contract as `create`.
+        B-roll for the chosen narrative; (4) build the full HOOK → BUILD → PAYOFF
+        → LOOP `ShortScript` via `ScriptBuilder` (ADR 0061/0063) and build the
+        `MediaPlan` from its beat texts via the media pipeline; (5) project it
+        into a `VideoArtifact` and bundle it with the `Report` (resolved by
+        ``packet.report_id``) + `CreatorPacket` + `MediaPlan` the downstream
+        `PrePublishGate`/publisher need. `create` wraps this and returns only the
+        artifact; the closed-loop runner (ADR 0054) consumes the full bundle.
+        ``caption_style`` (ADR 0059) is threaded through to composition — this
+        pipeline does not yet *source* a non-default style from anywhere (no
+        `ChannelProfile` binding exists), it only carries a caller-supplied one
+        through; the default reproduces today's rendering exactly. Same error
+        contract as `create`.
         """
         logger.info("video pipeline: starting research for topic %r", topic)
         final = await run_research(
@@ -212,11 +247,19 @@ class VideoPipeline:
         narrative = self._select_narrative(packet, narrative_index)
         visual_uris = await self._retrieve_visuals(narrative.title)
 
-        logger.info("video pipeline: composing media for narrative %r", narrative.title)
+        script = self._script_builder.build(packet, narrative_index=narrative_index)
+        logger.info(
+            "video pipeline: composing media for narrative %r (%d beats: %s)",
+            narrative.title,
+            len(script.beats),
+            ", ".join(beat.role.value for beat in script.beats),
+        )
         plan = await self._media.build(
             packet,
             narrative_index=narrative_index,
             visual_uris=visual_uris,
+            segments=[beat.text for beat in script.beats],
+            caption_style=caption_style,
         )
         artifact = self._to_artifact(topic, final, packet_id=packet.id, plan=plan)
         return ProducedVideo(

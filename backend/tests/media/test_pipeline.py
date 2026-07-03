@@ -23,7 +23,7 @@ from app.media.pipeline import (
     _allocate_timings,
     _split_into_beats,
 )
-from app.media.schemas import WordSpan
+from app.media.schemas import DEFAULT_CAPTION_STYLE, CaptionStyle, WordSpan
 from app.media.tts.base import FakeTTSProvider
 from app.schemas.research_state import CreatorPacket, NarrativeOption
 
@@ -132,6 +132,46 @@ def test_build_default_visual_uris_is_empty() -> None:
     pipeline = MediaPipeline(FakeTTSProvider(), composition)
     asyncio.run(pipeline.build(_packet(_narrative("Arc", "x"))))
     assert composition.calls[0].visual_uris == []
+
+
+# --- explicit `segments` override (ADR 0063: the ScriptBuilder full-arc seam) -
+
+
+def test_build_uses_explicit_segments_instead_of_splitting_the_outline() -> None:
+    # When the caller (VideoPipeline) supplies pre-built beat texts (e.g. the
+    # full HOOK/BUILD/PAYOFF/LOOP arc from ScriptBuilder), MediaPipeline must
+    # narrate/caption exactly those — never fall back to re-splitting the
+    # narrative's own script_outline, which the caller has deliberately bypassed.
+    plan = _build(
+        _packet(_narrative("Arc", "ignored outline line")),
+        segments=["hook text", "build one", "payoff", "loop text"],
+    )
+    assert plan.script_segments == ["hook text", "build one", "payoff", "loop text"]
+    assert len(plan.captions.cues) == 4
+
+
+def test_build_segments_none_falls_back_to_narrative_outline() -> None:
+    # The default (None) reproduces the pre-ADR-0063 behavior exactly.
+    plan = _build(_packet(_narrative("Arc", "one\ntwo")), segments=None)
+    assert plan.script_segments == ["one", "two"]
+
+
+# --- explicit `caption_style` pass-through (ADR 0059, wired here per ADR 0063) -
+
+
+def test_build_default_caption_style_reaches_composition() -> None:
+    composition = FakeCompositionService()
+    pipeline = MediaPipeline(FakeTTSProvider(), composition)
+    asyncio.run(pipeline.build(_packet(_narrative("Arc", "x"))))
+    assert composition.calls[0].caption_style is DEFAULT_CAPTION_STYLE
+
+
+def test_build_custom_caption_style_reaches_composition() -> None:
+    composition = FakeCompositionService()
+    pipeline = MediaPipeline(FakeTTSProvider(), composition)
+    style = CaptionStyle(font_name="Impact", font_size=64)
+    asyncio.run(pipeline.build(_packet(_narrative("Arc", "x")), caption_style=style))
+    assert composition.calls[0].caption_style == style
 
 
 def test_build_selects_narrative_by_index() -> None:
