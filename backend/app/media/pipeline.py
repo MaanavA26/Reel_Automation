@@ -24,9 +24,20 @@ place the media layer is allowed to depend on the Deep Research schema
 Timing invariant
 -----------------
 `CompositionService.render` takes a **single** `SynthesizedSpeech`, so narration
-is synthesized **once** over the whole script and caption timings are allocated
-across beats by **cumulative integer boundaries** (no per-segment rounding
-drift). This guarantees, exactly:
+is synthesized **once** over the whole script. Caption timings are allocated
+across beats one of two ways (ADR 0065, issue #152):
+
+* **No `word_aligner` configured, or alignment fails/can't be reconciled into
+  full coverage:** `_allocate_timings`'s **cumulative, character-count
+  proportional** boundaries (no per-segment rounding drift) — the original,
+  still-supported path.
+* **A `word_aligner` is configured and succeeds:** `_derive_timings_from_alignment`
+  derives cue boundaries from the *same* per-word measurements attached to
+  `Caption.words`, so a cue's declared `(start_ms, end_ms)` can never disagree
+  with where its karaoke words actually land (the bug #152 traced back to two
+  independent timing sources).
+
+Either way this guarantees, exactly:
 
     track.cues[-1].end_ms == audio.duration_ms == video.duration_ms
 """
@@ -45,6 +56,7 @@ from app.media.schemas import (
     CaptionTrack,
     RenderedVideo,
     SynthesizedSpeech,
+    WordSpan,
     _gen_id,
 )
 from app.media.subtitles.base import DeterministicSubtitleService, SubtitleService
@@ -123,6 +135,82 @@ def _allocate_timings(segments: list[str], total_ms: int) -> list[tuple[int, int
     return timings
 
 
+def _derive_timings_from_alignment(
+    word_lists: list[list[WordSpan]], total_ms: int
+) -> list[tuple[int, int]] | None:
+    """Derive per-segment ``(start_ms, end_ms)`` boundaries from real alignment.
+
+    ADR 0065's fix for issue #152: once a `WordAligner` has measured where each
+    segment's words actually land in the audio, cue boundaries must come from
+    *that same measurement* rather than `_allocate_timings`'s independent
+    character-count guess — the two sources disagreeing (by up to +7.1s
+    mid-video, per #152's measured numbers) is the root cause this function
+    removes. Each segment's raw boundary is ``(first word's start_ms, last
+    word's end_ms)``, adjusted by three rules so the result is a valid,
+    fully-covering, non-overlapping track:
+
+    1. **Gap bridging.** Unlike `_allocate_timings`, real alignment does not
+       guarantee zero gaps between segments — e.g. `SegmentedTTSProvider`
+       (#150) splices real ~300ms silences between sentences. Segment ``i``'s
+       ``end_ms`` is extended forward to segment ``i + 1``'s real
+       ``start_ms`` (``max(raw_end[i], raw_start[i + 1])``), so the caption
+       track has **full coverage** (no caption-free dead air) instead of
+       inventing a fake mid-utterance boundary — it just holds segment ``i``'s
+       own (real) text a little longer, up to the moment segment ``i + 1``
+       actually starts.
+    2. **Endpoints are pinned, not trusted verbatim.** The first segment's
+       ``start_ms`` is forced to ``0`` and the last segment's ``end_ms`` to
+       ``total_ms`` exactly — mirroring `_allocate_timings`'s own guarantee.
+       Real alignment may report a few ms of unassigned lead-in/trailing
+       silence; pinning removes any dead, uncaptioned head/tail without
+       touching any interior boundary.
+    3. **All-or-nothing.** Returns ``None`` for the *entire* result — never a
+       mix of derived and guessed boundaries — if full coverage can't be
+       confidently derived: a segment with an empty word list (the aligner
+       ran and the segment count matched, but produced zero words for one
+       segment — a defensive check against an external tool's edge cases,
+       not an expected case for non-blank text), an actual overlap between
+       adjacent segments' aligned times (an alignment anomaly, not a silence
+       gap — a real narrator cannot speak two segments at once), or any
+       boundary landing outside ``[0, total_ms]``. Mixing derived boundaries
+       for some cues with guessed ones for others would reintroduce a subtler
+       version of the exact two-source-disagreement bug this function exists
+       to remove. Callers must fall back to `_allocate_timings` for the whole
+       narration on ``None``, and must not attach the word spans to any cue
+       in that case either (a guessed boundary paired with real per-word
+       timings is the same inconsistency, just relocated).
+
+    Pure and hermetic: consumes already-produced `WordSpan` lists, does no I/O
+    and never raises — every unrecoverable condition degrades to ``None``.
+    """
+    if not word_lists:
+        return None
+    for spans in word_lists:
+        if not spans:
+            return None
+
+    n = len(word_lists)
+    raw_starts = [spans[0].start_ms for spans in word_lists]
+    raw_ends = [spans[-1].end_ms for spans in word_lists]
+
+    timings: list[tuple[int, int]] = []
+    for i in range(n):
+        end = raw_ends[i] if i == n - 1 else max(raw_ends[i], raw_starts[i + 1])
+        timings.append((raw_starts[i], end))
+
+    # Pin the endpoints (rule 2) after the raw pass so pinning cannot itself
+    # introduce an out-of-order boundary the loop below needs to catch.
+    timings[0] = (0, timings[0][1])
+    timings[-1] = (timings[-1][0], total_ms)
+
+    prev_end = 0
+    for start, end in timings:
+        if start < prev_end or end < start or end > total_ms:
+            return None
+        prev_end = end
+    return timings
+
+
 class MediaPipeline:
     """Turns a `CreatorPacket` into a `MediaPlan` via the injected media seams.
 
@@ -141,9 +229,14 @@ class MediaPipeline:
     ``word_aligner`` is **optional** (default ``None``): the word-timing source
     for karaoke captions is an external-tool-gated seam (ADR 0062), so the
     pipeline works exactly as before without one. When present, alignment is
-    requested post-TTS and word timings are attached to the caption cues;
-    alignment failure logs a warning and degrades to cue-level captions —
-    it never fails the render.
+    requested post-TTS **before** cue timings are decided (ADR 0065): if it
+    succeeds and yields full coverage, cue boundaries are *derived from the
+    same alignment* (`_derive_timings_from_alignment`) instead of guessed by
+    `_allocate_timings`, and the per-word spans are attached to the caption
+    cues. If alignment fails, miscounts, or can't be reconciled into full
+    coverage, the pipeline falls back to `_allocate_timings` and every cue
+    stays word-free — it never fails the render, and it never mixes a guessed
+    boundary with real per-word timings.
     """
 
     name = "pipeline"
@@ -186,9 +279,11 @@ class MediaPipeline:
         passes the full `ScriptBuilder`-produced HOOK→BUILD→PAYOFF→LOOP beat texts,
         so the pipeline narrates/captions the whole retention arc rather than only
         the narrative's own outline lines. Either way, the resulting segments are
-        synthesized once, caption timings are allocated across them, the caption
-        track is built, and the video is composed with ``caption_style`` (ADR
-        0059) passed through to `CompositionService.render`. Raises
+        synthesized once; caption timings then come from real word alignment
+        when a `word_aligner` is configured and succeeds, or from
+        `_allocate_timings`'s character-count guess otherwise (ADR 0065); the
+        caption track is built, and the video is composed with ``caption_style``
+        (ADR 0059) passed through to `CompositionService.render`. Raises
         `MediaPipelineError` if the packet has no narrative at that index or the
         resulting segments are empty.
         """
@@ -205,10 +300,38 @@ class MediaPipeline:
         narration = "\n".join(segments)
         audio = await self._tts.synthesize(text=narration, voice=self._voice)
 
-        timings = _allocate_timings(segments, audio.duration_ms)
-        captions = self._subtitles.build_track(segments=segments, timings=timings)
+        # ADR 0065 (issue #152): when an aligner is configured, run it BEFORE
+        # cue timings are decided, and derive the boundaries from the same
+        # measurement the karaoke words come from — never from the
+        # independent character-count guess. `word_lists` is only kept (and
+        # only ever attached to cues below) once both alignment *and*
+        # derivation succeed; any failure at either step falls back to
+        # `_allocate_timings` for the whole narration with every cue
+        # word-free, so a guessed boundary can never be paired with real
+        # per-word timings.
+        word_lists: list[list[WordSpan]] | None = None
         if self._word_aligner is not None:
-            await self._attach_word_timings(self._word_aligner, audio, segments, captions)
+            word_lists = await self._align_words(self._word_aligner, audio, segments)
+
+        timings: list[tuple[int, int]] | None = None
+        if word_lists is not None:
+            timings = _derive_timings_from_alignment(word_lists, audio.duration_ms)
+            if timings is None:
+                logger.warning(
+                    "word alignment succeeded but its spans could not be "
+                    "reconciled into full-coverage cue boundaries (e.g. an "
+                    "empty per-segment word list or an overlap); captions "
+                    "degrade to cue-level fade (ADR 0065)",
+                )
+                word_lists = None  # never attach words without their own boundaries
+
+        if timings is None:
+            timings = _allocate_timings(segments, audio.duration_ms)
+
+        captions = self._subtitles.build_track(segments=segments, timings=timings)
+        if word_lists is not None:
+            for cue, spans in zip(captions.cues, word_lists, strict=True):
+                cue.words = list(spans)
 
         video = await self._composition.render(
             audio=audio,
@@ -228,41 +351,41 @@ class MediaPipeline:
         )
 
     @staticmethod
-    async def _attach_word_timings(
+    async def _align_words(
         aligner: WordAligner,
         audio: SynthesizedSpeech,
         segments: list[str],
-        captions: CaptionTrack,
-    ) -> None:
-        """Best-effort word-timing attachment — degrades, never fails the render.
+    ) -> list[list[WordSpan]] | None:
+        """Best-effort word alignment — degrades to ``None``, never fails the render.
 
-        Requests per-word timings for the narration from the injected
-        `WordAligner` and attaches them to the caption cues (`Caption.words`),
-        which switches `format_ass` onto its karaoke path (ADR 0062). *Any*
-        failure — a missing aeneas install, a non-zero exit, a malformed sync
-        map, a per-segment count mismatch — is logged as a warning and leaves
-        every cue word-free, so the render proceeds with ADR 0059 cue-level
-        captions. The broad ``except Exception`` is deliberate: this is a
-        provider-seam boundary (the TTS router's fallback uses the same
-        posture) and karaoke is an enhancement, never worth failing a render
-        over. Attachment happens only after the full response passes the count
-        check, so a failure can never leave a half-attached track.
+        Requests per-segment word timings for the narration from the injected
+        `WordAligner`. *Any* failure — a missing aeneas install, a non-zero
+        exit, a malformed sync map, a per-segment count mismatch — is logged
+        as a warning and returns ``None``, so `build()` falls back to
+        `_allocate_timings` for cue boundaries and every cue stays word-free
+        (ADR 0059 cue-level captions). The broad ``except Exception`` is
+        deliberate: this is a provider-seam boundary (the TTS router's
+        fallback uses the same posture) and karaoke is an enhancement, never
+        worth failing a render over. Unlike the pre-ADR-0065 version of this
+        method, it does **not** attach anything itself — `build()` owns
+        attachment, because whether the returned spans may be attached now
+        depends on whether `_derive_timings_from_alignment` can also turn them
+        into valid cue boundaries (ADR 0065).
         """
         try:
             word_lists = await aligner.align(audio_path=audio.audio_uri, segments=segments)
-            if len(word_lists) != len(captions.cues):
+            if len(word_lists) != len(segments):
                 raise AlignmentError(
                     f"aligner returned {len(word_lists)} segment timing lists "
-                    f"for {len(captions.cues)} caption cues"
+                    f"for {len(segments)} segments"
                 )
         except Exception:
             logger.warning(
-                "word alignment failed; captions degrade to cue-level fade (ADR 0062)",
+                "word alignment failed; captions degrade to cue-level fade (ADR 0059/0062)",
                 exc_info=True,
             )
-            return
-        for cue, spans in zip(captions.cues, word_lists, strict=True):
-            cue.words = list(spans)
+            return None
+        return word_lists
 
     @staticmethod
     def _select_narrative(packet: CreatorPacket, index: int) -> NarrativeOption:
