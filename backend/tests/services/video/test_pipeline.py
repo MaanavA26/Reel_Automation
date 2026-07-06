@@ -284,12 +284,22 @@ def test_pipeline_default_caption_style_is_unchanged() -> None:
 
 def test_pipeline_wires_word_aligner_from_media_deps() -> None:
     # MediaDeps.word_aligner (ADR 0063) must actually reach the MediaPipeline
-    # this pipeline constructs, not just sit unused on the bundle.
-    aligner = FakeWordAligner(ms_per_word=50)
+    # this pipeline constructs, not just sit unused on the bundle. Two
+    # independent constraints picked ms_per_word=150 and ms_per_char=50:
+    # (1) ADR 0065 — the full 4-beat arc (hook/build/payoff/loop, 20 words
+    #     total) needs enough FakeTTSProvider-declared audio.duration_ms to
+    #     keep the fake aligner's running clock from exceeding it mid-track
+    #     (ms_per_char=10 is too small for this longer, real-arc narration).
+    # (2) ADR 0066 (issue #154) — the implied rate (1000/150 = 6.67 words/sec,
+    #     constant across every segment since `FakeWordAligner` paces one word
+    #     per `ms_per_word` with no gaps) must stay under the 8 wps
+    #     plausibility guard, so every cue here keeps its real aligned words
+    #     rather than being redirected to the per-segment fallback.
+    aligner = FakeWordAligner(ms_per_word=150)
     pipeline = VideoPipeline(
         _research_deps(),
         MediaDeps(
-            tts=FakeTTSProvider(ms_per_char=10),
+            tts=FakeTTSProvider(ms_per_char=50),
             composition=FakeCompositionService(),
             word_aligner=aligner,
         ),
