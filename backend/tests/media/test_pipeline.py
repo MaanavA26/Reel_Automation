@@ -17,11 +17,13 @@ import pytest
 from app.media.alignment.base import AlignmentError, FakeWordAligner
 from app.media.composition.base import FakeCompositionService
 from app.media.pipeline import (
+    MAX_PLAUSIBLE_WORDS_PER_SECOND,
     MediaPipeline,
     MediaPipelineError,
     MediaPlan,
     _allocate_timings,
     _derive_timings_from_alignment,
+    _implausible_segment_indices,
     _split_into_beats,
 )
 from app.media.schemas import DEFAULT_CAPTION_STYLE, CaptionStyle, WordSpan
@@ -226,17 +228,20 @@ def test_build_without_aligner_leaves_cues_word_free() -> None:
 
 
 def test_build_with_aligner_attaches_word_timings() -> None:
-    # ms_per_word=50 (not FakeWordAligner's own default of 300, and not 100)
-    # is deliberate: it keeps this fake aligner's running clock inside the
-    # FakeTTSProvider's declared audio.duration_ms (130ms for this narration
-    # at ms_per_char=10), which ADR 0065's boundary validation now requires
-    # for `_derive_timings_from_alignment` to succeed instead of falling back
-    # (a mismatched fake clock — e.g. ms_per_word=100 — legitimately exceeds
-    # total_ms mid-track and triggers the degrade path, exactly as it should
-    # for a real aligner whose measurements didn't fit the real audio either).
-    aligner = FakeWordAligner(ms_per_word=50)
+    # ms_per_word=200 (not FakeWordAligner's own default of 300, and not 50 or
+    # 100) is deliberate, satisfying two independent constraints at once:
+    # (1) ADR 0065 — it keeps this fake aligner's running clock inside the
+    #     FakeTTSProvider's declared audio.duration_ms (1300ms for this
+    #     narration at ms_per_char=100), which `_derive_timings_from_alignment`
+    #     requires to succeed instead of falling back.
+    # (2) ADR 0066 (issue #154) — its implied rate (1000/200 = 5 words/sec,
+    #     the same for every segment since `FakeWordAligner` paces one word
+    #     per `ms_per_word` with no gaps) stays under the 8 wps plausibility
+    #     guard, so this test still exercises the derive-and-attach path
+    #     rather than being redirected to the new per-segment fallback.
+    aligner = FakeWordAligner(ms_per_word=200)
     pipeline = MediaPipeline(
-        FakeTTSProvider(ms_per_char=10), FakeCompositionService(), word_aligner=aligner
+        FakeTTSProvider(ms_per_char=100), FakeCompositionService(), word_aligner=aligner
     )
     plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one two\nthree"))))
 
@@ -247,10 +252,10 @@ def test_build_with_aligner_attaches_word_timings() -> None:
     assert aligner.calls[0].audio_path == plan.audio.audio_uri
     assert aligner.calls[0].segments == ["one two", "three"]
     # ADR 0065: cue boundaries come from the SAME alignment, not a char-count
-    # guess — one(0-50) two(50-100) -> cue 0 spans [0, 100); three(100-150),
-    # last cue's end pinned to the true audio duration (130), not 150.
-    assert (plan.captions.cues[0].start_ms, plan.captions.cues[0].end_ms) == (0, 100)
-    assert (plan.captions.cues[1].start_ms, plan.captions.cues[1].end_ms) == (100, 130)
+    # guess — one(0-200) two(200-400) -> cue 0 spans [0, 400); three(400-600),
+    # last cue's end pinned to the true audio duration (1300), not 600.
+    assert (plan.captions.cues[0].start_ms, plan.captions.cues[0].end_ms) == (0, 400)
+    assert (plan.captions.cues[1].start_ms, plan.captions.cues[1].end_ms) == (400, 1300)
 
 
 def test_build_degrades_when_aligner_raises(caplog: pytest.LogCaptureFixture) -> None:
@@ -404,23 +409,26 @@ def test_build_cue_boundaries_match_alignment_not_the_char_count_guess() -> None
     guess and the real alignment disagree by design here: "one" is half the
     text by character count but the aligner says it is 6/7ths of the real
     audio by duration (mirrors #152's measured pattern of a segment whose
-    real speech share diverges sharply from its character-count share).
+    real speech share diverges sharply from its character-count share). Both
+    segments' own implied rate (900ms/word and 150ms/word respectively) stays
+    well under ADR 0066's 8 wps plausibility guard (issue #154), so this test
+    exercises the plain derive-and-attach path, not the new fallback.
     """
-    word_lists = [[_span("one", 0, 60)], [_span("two", 60, 70)]]
+    word_lists = [[_span("one", 0, 900)], [_span("two", 900, 1050)]]
     aligner = _FixedWordAligner(word_lists)
     pipeline = MediaPipeline(
-        FakeTTSProvider(ms_per_char=10), FakeCompositionService(), word_aligner=aligner
+        FakeTTSProvider(ms_per_char=150), FakeCompositionService(), word_aligner=aligner
     )
     plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one\ntwo"))))
 
     # The pre-fix guess, spelled out so the contrast with the assertions below
     # is explicit (this is exactly what pre-fix code would have produced).
     guessed = _allocate_timings(["one", "two"], plan.audio.duration_ms)
-    assert guessed == [(0, 35), (35, 70)]
+    assert guessed == [(0, 525), (525, 1050)]
 
     cues = plan.captions.cues
-    assert (cues[0].start_ms, cues[0].end_ms) == (0, 60)
-    assert (cues[1].start_ms, cues[1].end_ms) == (60, 70)
+    assert (cues[0].start_ms, cues[0].end_ms) == (0, 900)
+    assert (cues[1].start_ms, cues[1].end_ms) == (900, 1050)
     assert (cues[0].start_ms, cues[0].end_ms) != guessed[0]
     assert (cues[1].start_ms, cues[1].end_ms) != guessed[1]
     # The karaoke carrier comes from the identical source as the boundaries.
@@ -429,18 +437,20 @@ def test_build_cue_boundaries_match_alignment_not_the_char_count_guess() -> None
 
 
 def test_build_pins_endpoints_even_when_alignment_falls_short() -> None:
-    # The aligner's first word starts at 10ms (not 0) and its last word ends
-    # at 95ms while the real audio runs to 110ms (trailing silence) — the
-    # derived first/last cue must still hit the exact endpoints.
-    word_lists = [[_span("hello", 10, 50)], [_span("world", 50, 95)]]
+    # The aligner's first word starts at 100ms (not 0) and its last word ends
+    # at 1000ms while the real audio runs to 1100ms (trailing silence) — the
+    # derived first/last cue must still hit the exact endpoints. Each
+    # segment's own implied rate (2-2.5 wps) stays well under ADR 0066's 8 wps
+    # plausibility guard (issue #154), so this exercises the plain derive path.
+    word_lists = [[_span("hello", 100, 600)], [_span("world", 600, 1000)]]
     aligner = _FixedWordAligner(word_lists)
     pipeline = MediaPipeline(
-        FakeTTSProvider(ms_per_char=10), FakeCompositionService(), word_aligner=aligner
+        FakeTTSProvider(ms_per_char=100), FakeCompositionService(), word_aligner=aligner
     )
     plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "hello\nworld"))))
 
     assert plan.captions.cues[0].start_ms == 0
-    assert plan.captions.cues[-1].end_ms == plan.audio.duration_ms == 110
+    assert plan.captions.cues[-1].end_ms == plan.audio.duration_ms == 1100
 
 
 def test_build_falls_back_fully_when_one_segment_has_no_aligned_words(
@@ -463,3 +473,305 @@ def test_build_falls_back_fully_when_one_segment_has_no_aligned_words(
     assert actual == expected
     assert all(cue.words == [] for cue in plan.captions.cues)
     assert any("could not be reconciled" in record.getMessage() for record in caplog.records)
+
+
+def test_build_falls_back_fully_on_real_overlap_between_segments(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A build()-level regression companion to
+    # `test_derive_timings_none_on_real_overlap_between_segments`: this
+    # existing ADR 0065 total-failure trigger (a genuine overlap, not a
+    # plausibility problem) must still short-circuit before ADR 0066's
+    # plausibility guard ever runs, exactly as it did before this PR.
+    word_lists = [[_span("hello", 0, 60)], [_span("world", 50, 90)]]
+    aligner = _FixedWordAligner(word_lists)
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=10), FakeCompositionService(), word_aligner=aligner
+    )
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "hello\nworld"))))
+
+    expected = _allocate_timings(["hello", "world"], plan.audio.duration_ms)
+    actual = [(c.start_ms, c.end_ms) for c in plan.captions.cues]
+    assert actual == expected
+    assert all(cue.words == [] for cue in plan.captions.cues)
+    assert any("could not be reconciled" in record.getMessage() for record in caplog.records)
+    # The ADR 0066 plausibility warning never fires: the total-failure branch
+    # returned before `_implausible_segment_indices` was even called.
+    assert not any("impossible speaking rate" in record.getMessage() for record in caplog.records)
+
+
+# --- `_implausible_segment_indices` (ADR 0066's detector, issue #154) -------
+#
+# Pure, hermetic: fixture `WordSpan` lists in, a `set[int]` of flagged indices
+# out — no aligner, no audio, no pipeline needed. Mirrors the
+# `_derive_timings_from_alignment` pure-function test section above.
+
+
+def test_implausible_flags_a_segment_far_above_the_threshold() -> None:
+    # Mirrors #154's own measured numbers: 11 words crushed into ~44ms is a
+    # ~250 words/sec implied rate, more than an order of magnitude past the
+    # 8 wps guard.
+    word_lists = [[_span(f"w{i}", i * 4, (i + 1) * 4) for i in range(11)]]
+    assert _implausible_segment_indices(word_lists) == {0}
+
+
+def test_implausible_does_not_flag_a_plausible_fast_segment() -> None:
+    # 11 words over 1.68s (~6.5 wps, #154's own "payoff" example) is fast but
+    # real; it must never trip the guard.
+    word_lists = [[_span(f"w{i}", i * 150, (i + 1) * 150) for i in range(11)]]
+    assert _implausible_segment_indices(word_lists) == set()
+
+
+def test_implausible_threshold_is_exclusive_at_exactly_8_wps() -> None:
+    # 8 words in exactly 1000ms is exactly `MAX_PLAUSIBLE_WORDS_PER_SECOND` —
+    # the check is a strict `>`, so a rate *equal* to the threshold is still
+    # plausible (the threshold is the first flagged value, not the last
+    # tolerated one).
+    assert MAX_PLAUSIBLE_WORDS_PER_SECOND == 8.0
+    word_lists = [[_span(f"w{i}", i * 125, (i + 1) * 125) for i in range(8)]]
+    assert _implausible_segment_indices(word_lists) == set()
+
+
+def test_implausible_flags_just_above_the_threshold() -> None:
+    # The same 8 words one millisecond faster (999ms instead of 1000ms) is
+    # 8.008 words/sec — just past the threshold, and now flagged.
+    word_lists = [[_span("w", 0, 999)] + [_span(f"w{i}", 999, 999) for i in range(7)]]
+    assert _implausible_segment_indices(word_lists) == {0}
+
+
+def test_implausible_skips_empty_word_lists() -> None:
+    # An empty segment is the pre-existing `_derive_timings_from_alignment`
+    # total-failure trigger, a different failure category — this detector
+    # must not also flag it (that would double-count one failure as two).
+    word_lists = [[_span("hi", 0, 500)], []]
+    assert _implausible_segment_indices(word_lists) == set()
+
+
+def test_implausible_guards_zero_duration_without_raising() -> None:
+    # A word span whose start equals its end (a zero-duration collapse) must
+    # not raise ZeroDivisionError; it is automatically implausible (an
+    # infinite implied rate).
+    word_lists = [[_span("w", 100, 100)]]
+    assert _implausible_segment_indices(word_lists) == {0}
+
+
+def test_implausible_flags_only_the_segments_that_fail() -> None:
+    word_lists = [
+        [_span("ok1", 0, 500)],  # 2 wps, plausible
+        [_span(f"bad{i}", i * 4, (i + 1) * 4) for i in range(11)],  # crushed
+        [_span("ok2", 1000, 1500)],  # 2 wps, plausible
+    ]
+    assert _implausible_segment_indices(word_lists) == {1}
+
+
+# --- Build-level per-segment plausibility guard (ADR 0066, issue #154) -----
+#
+# `MediaPipeline.build` end-to-end: proves the guard is surgical AND
+# word-data-only — flagged segments lose exactly their karaoke words, no
+# cue's boundary moves, and every plausible segment keeps its real derived
+# boundary and words.
+
+
+def test_build_clears_words_when_last_segment_is_implausible() -> None:
+    """The load-bearing regression test for #154 / ADR 0066.
+
+    Mirrors #154's own measured pathology: the LAST of three segments aligns
+    to an 11-word span crushed into ~44ms (a ~250 words/sec implied rate),
+    while the first two segments align normally (2.5 words/sec each). Before
+    the guard, `MediaPipeline.build` attached the crushed 11-word span
+    verbatim to the last cue — a `\\kf` sweep that finishes in 44ms and then
+    sits frozen for the rest of the cue, #154's garbled-flash symptom. The
+    guard clears exactly that word data and nothing else: every cue boundary
+    (the flagged cue's included) stays what the derivation produced.
+    """
+    word_lists = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],  # 0-2000, 2.5 wps
+        [_span(f"b{i}", 2000 + i * 400, 2000 + (i + 1) * 400) for i in range(5)],  # 2000-4000
+        [_span(f"c{i}", 4000 + i * 4, 4000 + (i + 1) * 4) for i in range(11)],  # 4000-4044!
+    ]
+    aligner = _FixedWordAligner(word_lists)
+    # ms_per_char=200 gives this narration (30 chars) audio.duration_ms=6000 —
+    # comfortably above the 4000ms the non-final boundaries need (ADR 0065's
+    # own boundary check), so the fixture exercises the derive-then-guard
+    # path rather than accidentally tripping the unrelated total-failure path.
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=200), FakeCompositionService(), word_aligner=aligner
+    )
+    segments = ["hook line", "build line", "loop line"]
+    plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+
+    cues = plan.captions.cues
+    assert len(cues) == 3
+
+    # (a) The crushed segment's words are cleared — no karaoke sweep is ever
+    # rendered from data known to be garbage; the cue degrades to the plain
+    # cue-level fade (ADR 0059).
+    assert cues[2].words == []
+
+    # (b) Its boundary is untouched: exactly the derivation's own value —
+    # (its real aligned start, audio.duration_ms) — because ADR 0065's
+    # endpoint pinning already replaced the crushed raw end (4044) before
+    # the guard ever ran. The guard changed no timing.
+    assert (cues[2].start_ms, cues[2].end_ms) == (4000, plan.audio.duration_ms)
+
+    # (c) The OTHER two segments keep their real aligned boundaries and words
+    # completely unchanged — the key proof this is surgical, not a full
+    # `_allocate_timings` fallback for the whole narration.
+    assert (cues[0].start_ms, cues[0].end_ms) == (0, 2000)
+    assert (cues[1].start_ms, cues[1].end_ms) == (2000, 4000)
+    assert [w.text for w in cues[0].words] == [f"a{i}" for i in range(5)]
+    assert [w.text for w in cues[1].words] == [f"b{i}" for i in range(5)]
+    # Not the whole-narration char-count fallback either.
+    guessed = _allocate_timings(segments, plan.audio.duration_ms)
+    assert [(c.start_ms, c.end_ms) for c in cues] != guessed
+
+
+def test_plausibility_guard_never_alters_cue_boundaries() -> None:
+    """Locked contract (PR #155's independent re-review, 2026-07-07).
+
+    The plausibility guard affects ONLY karaoke word data: with the guard
+    demonstrably firing (a cue rendered word-free), every cue boundary is
+    byte-identical to what `_derive_timings_from_alignment` alone produces
+    for the same alignment data — for #154's observed geometry (an
+    implausible LAST segment) and for an implausible MIDDLE segment alike.
+    The re-review proved any "anchor to plausible neighbors" correction is
+    an identity operation on the derivation's contiguous, endpoint-pinned
+    output, so this PR deliberately ships no boundary logic; the actual
+    crushed-cue-window fix is #154's separate chunked per-beat alignment
+    work.
+    """
+    crushed_last = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],
+        [_span(f"b{i}", 2000 + i * 400, 2000 + (i + 1) * 400) for i in range(5)],
+        [_span(f"c{i}", 4000 + i * 4, 4000 + (i + 1) * 4) for i in range(11)],  # crushed
+    ]
+    crushed_middle = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],
+        [_span(f"b{i}", 2000 + i * 4, 2000 + (i + 1) * 4) for i in range(11)],  # crushed
+        [_span(f"c{i}", 2500 + i * 400, 2500 + (i + 1) * 400) for i in range(5)],
+    ]
+    segments = ["hook line", "build line", "loop line"]
+    for word_lists in (crushed_last, crushed_middle):
+        pipeline = MediaPipeline(
+            FakeTTSProvider(ms_per_char=200),
+            FakeCompositionService(),
+            word_aligner=_FixedWordAligner(word_lists),
+        )
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+        # The guard fired: exactly one cue was stripped of its words...
+        assert sum(1 for cue in plan.captions.cues if cue.words == []) == 1
+        # ...and yet every boundary is byte-identical to the ADR 0065
+        # derivation's own output for the same word lists.
+        assert [(c.start_ms, c.end_ms) for c in plan.captions.cues] == (
+            _derive_timings_from_alignment(word_lists, plan.audio.duration_ms)
+        )
+
+
+def test_build_clears_words_only_for_an_implausible_middle_segment() -> None:
+    word_lists = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],  # 0-2000, plausible
+        [_span(f"b{i}", 2000 + i * 4, 2000 + (i + 1) * 4) for i in range(11)],  # crushed
+        [_span(f"c{i}", 2500 + i * 400, 2500 + (i + 1) * 400) for i in range(5)],  # plausible
+    ]
+    aligner = _FixedWordAligner(word_lists)
+    # ms_per_char=250 gives this narration (13 chars) audio.duration_ms=3250 —
+    # comfortably above the 2500ms the non-final boundaries need.
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=250), FakeCompositionService(), word_aligner=aligner
+    )
+    segments = ["one", "two", "three"]
+    plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+
+    cues = plan.captions.cues
+    assert cues[1].words == []
+    # The flagged cue's boundary is the derivation's own value — its real
+    # aligned start, gap-bridged forward to the next segment's real start by
+    # ADR 0065's rule 1 — because the guard left it alone.
+    assert (cues[1].start_ms, cues[1].end_ms) == (2000, 2500)
+    # Neighbors are untouched.
+    assert (cues[0].start_ms, cues[0].end_ms) == (0, 2000)
+    assert [w.text for w in cues[0].words] == [f"a{i}" for i in range(5)]
+    assert [w.text for w in cues[2].words] == [f"c{i}" for i in range(5)]
+
+
+def test_build_clears_words_for_every_flagged_segment() -> None:
+    # Two CONSECUTIVE implausible segments sandwiched between two valid ones:
+    # each flagged segment loses its own words; the valid ones keep theirs;
+    # and the boundaries — including the two flagged cues' — are exactly the
+    # derivation's output, untouched by the guard.
+    word_lists = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],  # 0-2000, plausible
+        [_span(f"b{i}", 2000 + i * 4, 2000 + (i + 1) * 4) for i in range(11)],  # crushed
+        [_span(f"c{i}", 2044 + i * 4, 2044 + (i + 1) * 4) for i in range(11)],  # crushed
+        [_span(f"d{i}", 2500 + i * 400, 2500 + (i + 1) * 400) for i in range(5)],  # plausible
+    ]
+    aligner = _FixedWordAligner(word_lists)
+    # ms_per_char=300 gives this narration (11 chars) audio.duration_ms=3300 —
+    # comfortably above the 2500ms the non-final boundaries need.
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=300), FakeCompositionService(), word_aligner=aligner
+    )
+    segments = ["s0", "s1", "s2", "s3"]
+    plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+
+    cues = plan.captions.cues
+    boundaries = [(c.start_ms, c.end_ms) for c in cues]
+    assert boundaries == _derive_timings_from_alignment(word_lists, plan.audio.duration_ms)
+    # Both crushed cues lost their words; both valid ones kept theirs.
+    assert cues[1].words == []
+    assert cues[2].words == []
+    assert [w.text for w in cues[0].words] == [f"a{i}" for i in range(5)]
+    assert [w.text for w in cues[3].words] == [f"d{i}" for i in range(5)]
+
+
+def test_build_falls_back_fully_when_every_segment_is_implausible(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Pathological (no evidence this occurs in practice, per #154's own
+    # observations): every segment fails plausibility, so there is no real
+    # alignment left worth preserving. Must widen to the same whole-narration
+    # `_allocate_timings` fallback ADR 0065 already uses for total alignment
+    # failure — never derived boundaries that are garbage end to end.
+    word_lists = [
+        [_span(f"a{i}", i * 4, (i + 1) * 4) for i in range(11)],
+        [_span(f"b{i}", 44 + i * 4, 44 + (i + 1) * 4) for i in range(11)],
+    ]
+    aligner = _FixedWordAligner(word_lists)
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=10), FakeCompositionService(), word_aligner=aligner
+    )
+    segments = ["one", "two"]
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+
+    expected = _allocate_timings(segments, plan.audio.duration_ms)
+    actual = [(c.start_ms, c.end_ms) for c in plan.captions.cues]
+    assert actual == expected
+    assert all(cue.words == [] for cue in plan.captions.cues)
+    assert any(
+        "impossible speaking rate" in record.getMessage() and "every segment" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_build_logs_no_plausibility_warning_for_realistic_alignment(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A normal, entirely plausible alignment (well under 8 wps everywhere)
+    # must not emit the ADR 0066 warning at all, and every cue keeps its real
+    # derived boundary and words exactly as ADR 0065 already produces.
+    word_lists = [[_span("one", 0, 900)], [_span("two", 900, 1050)]]
+    aligner = _FixedWordAligner(word_lists)
+    pipeline = MediaPipeline(
+        FakeTTSProvider(ms_per_char=150), FakeCompositionService(), word_aligner=aligner
+    )
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one\ntwo"))))
+
+    assert not any("impossible speaking rate" in record.getMessage() for record in caplog.records)
+    cues = plan.captions.cues
+    assert (cues[0].start_ms, cues[0].end_ms) == (0, 900)
+    assert (cues[1].start_ms, cues[1].end_ms) == (900, 1050)
+    assert [w.text for w in cues[0].words] == ["one"]
+    assert [w.text for w in cues[1].words] == ["two"]
