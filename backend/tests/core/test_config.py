@@ -8,6 +8,8 @@ time with a clear message, never later inside `_build_router` or mid-run.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -46,3 +48,29 @@ def test_aeneas_python_bin_defaults_to_none() -> None:
     # Unset by default (ADR 0062/0063): the composition root leaves
     # MediaPipeline's word_aligner unset unless an operator opts in.
     assert Settings().aeneas_python_bin is None
+
+
+# --- Hermetic env-file isolation (#156) ---------------------------------------
+
+
+def test_hermetic_settings_construction_ignores_dotenv_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for #156: a `.env` file must never leak into hermetic tests.
+
+    pydantic-settings resolves a relative `env_file` against the CWD at
+    instantiation time, so without the conftest neutralization the `.env`
+    written here would populate `stock_api_key` and this test would fail —
+    exactly how a developer machine's real keys broke key-absent wiring tests.
+    """
+    (tmp_path / ".env").write_text("REEL_AUTOMATION_STOCK_API_KEY=leaked-from-file\n")
+    monkeypatch.chdir(tmp_path)
+    assert Settings().stock_api_key.get_secret_value() == ""
+
+
+def test_process_env_vars_still_reach_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #156 isolation disables only the env *file* source: real environment
+    # variables (the production configuration path CI and operators use) must
+    # keep flowing into Settings.
+    monkeypatch.setenv("REEL_AUTOMATION_STOCK_API_KEY", "from-process-env")
+    assert Settings().stock_api_key.get_secret_value() == "from-process-env"
