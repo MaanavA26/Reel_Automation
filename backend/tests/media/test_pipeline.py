@@ -22,7 +22,6 @@ from app.media.pipeline import (
     MediaPipelineError,
     MediaPlan,
     _allocate_timings,
-    _anchor_implausible_segments,
     _derive_timings_from_alignment,
     _implausible_segment_indices,
     _split_into_beats,
@@ -499,7 +498,7 @@ def test_build_falls_back_fully_on_real_overlap_between_segments(
     assert any("could not be reconciled" in record.getMessage() for record in caplog.records)
     # The ADR 0066 plausibility warning never fires: the total-failure branch
     # returned before `_implausible_segment_indices` was even called.
-    assert not any("implausible" in record.getMessage() for record in caplog.records)
+    assert not any("impossible speaking rate" in record.getMessage() for record in caplog.records)
 
 
 # --- `_implausible_segment_indices` (ADR 0066's detector, issue #154) -------
@@ -566,78 +565,25 @@ def test_implausible_flags_only_the_segments_that_fail() -> None:
     assert _implausible_segment_indices(word_lists) == {1}
 
 
-# --- `_anchor_implausible_segments` (ADR 0066's fallback, issue #154) -------
-#
-# Pure, hermetic: already-derived `timings` + a set of bad indices in,
-# corrected `timings` out.
-
-
-def test_anchor_last_segment_fills_to_audio_duration() -> None:
-    derived = [(0, 2000), (2000, 4000), (4000, 4200)]
-    fixed = _anchor_implausible_segments(derived, {2}, total_ms=4200)
-    assert fixed == [(0, 2000), (2000, 4000), (4000, 4200)]
-    # Untouched neighbors are the identical objects/values `derived` held.
-    assert fixed[0] == derived[0]
-    assert fixed[1] == derived[1]
-
-
-def test_anchor_first_segment_starts_at_zero() -> None:
-    # The first segment's start is already pinned to 0 by
-    # `_derive_timings_from_alignment` itself, regardless of plausibility, so
-    # this confirms the anchor formula's "0 if first" branch agrees with that
-    # existing pin; its end (bridged from the next VALID segment's own real
-    # start, index 1) also coincides with the base derivation's own value
-    # here — the same coincidence documented on `_anchor_implausible_segments`
-    # for a segment whose only implausible neighbor is not part of a
-    # consecutive run.
-    derived = [(0, 40), (40, 500), (500, 1000)]
-    fixed = _anchor_implausible_segments(derived, {0}, total_ms=1000)
-    assert fixed[0] == (0, 40)
-    assert fixed[1] == derived[1]
-    assert fixed[2] == derived[2]
-
-
-def test_anchor_middle_segment_spans_between_its_two_valid_neighbors() -> None:
-    derived = [(0, 2000), (2000, 2500), (2500, 4600)]
-    fixed = _anchor_implausible_segments(derived, {1}, total_ms=4600)
-    assert fixed == [(0, 2000), (2000, 2500), (2500, 4600)]
-
-
-def test_anchor_consecutive_run_first_absorbs_gap_second_collapses() -> None:
-    # Two consecutive implausible segments (1 and 2) between two valid ones.
-    # `derived[1]` (2000, 2044) is itself a genuinely crushed pre-fix boundary
-    # (self-heal via bridging cannot help the first of a run, since its own
-    # "next" segment is also implausible) — this is the case where the fix
-    # visibly changes the boundary, not just the words.
-    derived = [(0, 2000), (2000, 2044), (2044, 2500), (2500, 4600)]
-    fixed = _anchor_implausible_segments(derived, {1, 2}, total_ms=4600)
-    assert fixed == [(0, 2000), (2000, 2500), (2500, 2500), (2500, 4600)]
-    # Documented consequence: the run's first segment absorbs the whole real
-    # gap; every later segment in the same run collapses to zero width. Never
-    # overlapping, never out of order.
-    for (_, end_prev), (start_next, _) in pairwise(fixed):
-        assert end_prev == start_next
-    for start, end in fixed:
-        assert start <= end
-
-
 # --- Build-level per-segment plausibility guard (ADR 0066, issue #154) -----
 #
-# `MediaPipeline.build` end-to-end: proves the guard is surgical (only the
-# implausible segment(s) lose their boundary/words) rather than a repeat of
-# ADR 0065's whole-narration fallback.
+# `MediaPipeline.build` end-to-end: proves the guard is surgical AND
+# word-data-only — flagged segments lose exactly their karaoke words, no
+# cue's boundary moves, and every plausible segment keeps its real derived
+# boundary and words.
 
 
-def test_build_clears_words_and_anchors_boundary_when_last_segment_is_implausible() -> None:
+def test_build_clears_words_when_last_segment_is_implausible() -> None:
     """The load-bearing regression test for #154 / ADR 0066.
 
     Mirrors #154's own measured pathology: the LAST of three segments aligns
     to an 11-word span crushed into ~44ms (a ~250 words/sec implied rate),
     while the first two segments align normally (2.5 words/sec each). Before
-    this PR, `MediaPipeline.build` would have attached the crushed 11-word
-    span verbatim to the last cue — a `\\kf` sweep that finishes in 44ms and
-    then sits frozen for the rest of the cue, exactly #154's "near-instant
-    flash" symptom.
+    the guard, `MediaPipeline.build` attached the crushed 11-word span
+    verbatim to the last cue — a `\\kf` sweep that finishes in 44ms and then
+    sits frozen for the rest of the cue, #154's garbled-flash symptom. The
+    guard clears exactly that word data and nothing else: every cue boundary
+    (the flagged cue's included) stays what the derivation produced.
     """
     word_lists = [
         [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],  # 0-2000, 2.5 wps
@@ -658,14 +604,16 @@ def test_build_clears_words_and_anchors_boundary_when_last_segment_is_implausibl
     cues = plan.captions.cues
     assert len(cues) == 3
 
-    # (a) The crushed segment's words are cleared, not the garbage 44ms span.
+    # (a) The crushed segment's words are cleared — no karaoke sweep is ever
+    # rendered from data known to be garbage; the cue degrades to the plain
+    # cue-level fade (ADR 0059).
     assert cues[2].words == []
 
-    # (b) Its boundary is the neighbor-anchored fallback (previous cue's real
-    # end, audio.duration_ms) — NOT the implausible raw aligned span
-    # (4000, 4044).
-    assert (cues[2].start_ms, cues[2].end_ms) == (cues[1].end_ms, plan.audio.duration_ms)
-    assert (cues[2].start_ms, cues[2].end_ms) != (4000, 4044)
+    # (b) Its boundary is untouched: exactly the derivation's own value —
+    # (its real aligned start, audio.duration_ms) — because ADR 0065's
+    # endpoint pinning already replaced the crushed raw end (4044) before
+    # the guard ever ran. The guard changed no timing.
+    assert (cues[2].start_ms, cues[2].end_ms) == (4000, plan.audio.duration_ms)
 
     # (c) The OTHER two segments keep their real aligned boundaries and words
     # completely unchanged — the key proof this is surgical, not a full
@@ -679,7 +627,48 @@ def test_build_clears_words_and_anchors_boundary_when_last_segment_is_implausibl
     assert [(c.start_ms, c.end_ms) for c in cues] != guessed
 
 
-def test_build_anchors_a_middle_segment_between_its_two_valid_neighbors() -> None:
+def test_plausibility_guard_never_alters_cue_boundaries() -> None:
+    """Locked contract (PR #155's independent re-review, 2026-07-07).
+
+    The plausibility guard affects ONLY karaoke word data: with the guard
+    demonstrably firing (a cue rendered word-free), every cue boundary is
+    byte-identical to what `_derive_timings_from_alignment` alone produces
+    for the same alignment data — for #154's observed geometry (an
+    implausible LAST segment) and for an implausible MIDDLE segment alike.
+    The re-review proved any "anchor to plausible neighbors" correction is
+    an identity operation on the derivation's contiguous, endpoint-pinned
+    output, so this PR deliberately ships no boundary logic; the actual
+    crushed-cue-window fix is #154's separate chunked per-beat alignment
+    work.
+    """
+    crushed_last = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],
+        [_span(f"b{i}", 2000 + i * 400, 2000 + (i + 1) * 400) for i in range(5)],
+        [_span(f"c{i}", 4000 + i * 4, 4000 + (i + 1) * 4) for i in range(11)],  # crushed
+    ]
+    crushed_middle = [
+        [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],
+        [_span(f"b{i}", 2000 + i * 4, 2000 + (i + 1) * 4) for i in range(11)],  # crushed
+        [_span(f"c{i}", 2500 + i * 400, 2500 + (i + 1) * 400) for i in range(5)],
+    ]
+    segments = ["hook line", "build line", "loop line"]
+    for word_lists in (crushed_last, crushed_middle):
+        pipeline = MediaPipeline(
+            FakeTTSProvider(ms_per_char=200),
+            FakeCompositionService(),
+            word_aligner=_FixedWordAligner(word_lists),
+        )
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+        # The guard fired: exactly one cue was stripped of its words...
+        assert sum(1 for cue in plan.captions.cues if cue.words == []) == 1
+        # ...and yet every boundary is byte-identical to the ADR 0065
+        # derivation's own output for the same word lists.
+        assert [(c.start_ms, c.end_ms) for c in plan.captions.cues] == (
+            _derive_timings_from_alignment(word_lists, plan.audio.duration_ms)
+        )
+
+
+def test_build_clears_words_only_for_an_implausible_middle_segment() -> None:
     word_lists = [
         [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],  # 0-2000, plausible
         [_span(f"b{i}", 2000 + i * 4, 2000 + (i + 1) * 4) for i in range(11)],  # crushed
@@ -696,19 +685,21 @@ def test_build_anchors_a_middle_segment_between_its_two_valid_neighbors() -> Non
 
     cues = plan.captions.cues
     assert cues[1].words == []
-    assert (cues[1].start_ms, cues[1].end_ms) == (cues[0].end_ms, cues[2].start_ms)
-    assert (cues[1].start_ms, cues[1].end_ms) != (2000, 2044)  # not the crushed raw span
+    # The flagged cue's boundary is the derivation's own value — its real
+    # aligned start, gap-bridged forward to the next segment's real start by
+    # ADR 0065's rule 1 — because the guard left it alone.
+    assert (cues[1].start_ms, cues[1].end_ms) == (2000, 2500)
     # Neighbors are untouched.
     assert (cues[0].start_ms, cues[0].end_ms) == (0, 2000)
     assert [w.text for w in cues[0].words] == [f"a{i}" for i in range(5)]
     assert [w.text for w in cues[2].words] == [f"c{i}" for i in range(5)]
 
 
-def test_build_handles_multiple_implausible_segments_without_overlap_or_disorder() -> None:
-    # Two CONSECUTIVE implausible segments sandwiched between two valid ones —
-    # the case that also proves the fix does not chain-trust one implausible
-    # segment's data to anchor another (see `_anchor_implausible_segments`'s
-    # own dedicated test for the same fixture, pure).
+def test_build_clears_words_for_every_flagged_segment() -> None:
+    # Two CONSECUTIVE implausible segments sandwiched between two valid ones:
+    # each flagged segment loses its own words; the valid ones keep theirs;
+    # and the boundaries — including the two flagged cues' — are exactly the
+    # derivation's output, untouched by the guard.
     word_lists = [
         [_span(f"a{i}", i * 400, (i + 1) * 400) for i in range(5)],  # 0-2000, plausible
         [_span(f"b{i}", 2000 + i * 4, 2000 + (i + 1) * 4) for i in range(11)],  # crushed
@@ -726,12 +717,7 @@ def test_build_handles_multiple_implausible_segments_without_overlap_or_disorder
 
     cues = plan.captions.cues
     boundaries = [(c.start_ms, c.end_ms) for c in cues]
-    assert boundaries == [(0, 2000), (2000, 2500), (2500, 2500), (2500, plan.audio.duration_ms)]
-    # Strictly non-overlapping, ordered, and touching.
-    for (_, end_prev), (start_next, _) in pairwise(boundaries):
-        assert end_prev == start_next
-    for start, end in boundaries:
-        assert start <= end
+    assert boundaries == _derive_timings_from_alignment(word_lists, plan.audio.duration_ms)
     # Both crushed cues lost their words; both valid ones kept theirs.
     assert cues[1].words == []
     assert cues[2].words == []
@@ -743,10 +729,10 @@ def test_build_falls_back_fully_when_every_segment_is_implausible(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Pathological (no evidence this occurs in practice, per #154's own
-    # observations): every segment fails plausibility, so there is no
-    # trustworthy neighbor anywhere to anchor to. Must widen to the same
-    # whole-narration `_allocate_timings` fallback ADR 0065 already uses for
-    # total alignment failure — never a degenerate all-zero-width result.
+    # observations): every segment fails plausibility, so there is no real
+    # alignment left worth preserving. Must widen to the same whole-narration
+    # `_allocate_timings` fallback ADR 0065 already uses for total alignment
+    # failure — never derived boundaries that are garbage end to end.
     word_lists = [
         [_span(f"a{i}", i * 4, (i + 1) * 4) for i in range(11)],
         [_span(f"b{i}", 44 + i * 4, 44 + (i + 1) * 4) for i in range(11)],
@@ -783,7 +769,7 @@ def test_build_logs_no_plausibility_warning_for_realistic_alignment(
     with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
         plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "one\ntwo"))))
 
-    assert not any("implausible" in record.getMessage() for record in caplog.records)
+    assert not any("impossible speaking rate" in record.getMessage() for record in caplog.records)
     cues = plan.captions.cues
     assert (cues[0].start_ms, cues[0].end_ms) == (0, 900)
     assert (cues[1].start_ms, cues[1].end_ms) == (900, 1050)

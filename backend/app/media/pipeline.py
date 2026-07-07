@@ -40,13 +40,14 @@ across beats one of three ways (ADR 0065 issue #152; ADR 0066 issue #154):
 * **A `word_aligner` succeeds but one or more (not all) segments' aligned span
   implies an impossible speaking rate** (ADR 0066, issue #154 — a real,
   positional aeneas artifact that crushes a segment, most often the last one,
-  to a near-zero duration): only those specific segments' boundaries fall back
-  to a computed value anchored to their nearest plausible neighbors, and only
-  those segments lose their karaoke words; every other segment keeps its real
-  derived boundary and words untouched. If *every* segment is implausible
-  (pathological), the whole narration falls back to `_allocate_timings`
-  instead — ADR 0065's original all-or-nothing posture, reserved for when
-  per-segment salvage isn't possible either.
+  to a near-zero duration): cue boundaries stay exactly as derived — the
+  guard never touches timing — but the flagged segments' karaoke words are
+  cleared, degrading those cues to the plain cue-level fade (ADR 0059);
+  every other segment keeps its real derived boundary and words untouched.
+  If *every* segment is implausible (pathological), the whole narration
+  falls back to `_allocate_timings` instead — ADR 0065's original
+  all-or-nothing posture, reserved for when no segment's alignment is
+  trustworthy at all.
 
 Either way this guarantees, exactly:
 
@@ -262,6 +263,12 @@ def _implausible_segment_indices(
     `ZeroDivisionError` — issue #154's own reproductions include exactly this
     case (a segment crushed to a duration so small it can round to zero).
 
+    Known caveat: on a 1-2-word segment the words-per-second heuristic gets
+    noisy — a single word genuinely aligned under ~125ms already implies
+    > 8 wps and is flagged. The consequence is deliberately mild (that cue
+    only drops its karaoke sweep; its timing and plain cue-level fade are
+    unaffected), so the false positive is accepted rather than special-cased.
+
     Pure and hermetic: no I/O, never raises.
     """
     flagged: set[int] = set()
@@ -273,61 +280,6 @@ def _implausible_segment_indices(
         if implied_words_per_second > max_words_per_second:
             flagged.add(i)
     return flagged
-
-
-def _anchor_implausible_segments(
-    timings: list[tuple[int, int]],
-    implausible: set[int],
-    total_ms: int,
-) -> list[tuple[int, int]]:
-    """Replace implausible segments' boundaries with neighbor-anchored values.
-
-    ADR 0066's surgical fallback for issue #154: `timings` is
-    `_derive_timings_from_alignment`'s already-valid, already-covering,
-    already-non-overlapping output — every entry in ``implausible`` is
-    replaced; every other entry is returned **byte-identical**, which is the
-    whole point (the other segments' real alignment is trustworthy and must
-    not be perturbed).
-
-    An implausible segment fills exactly the gap between its nearest plausible
-    neighbors — the same "fill the real gap, don't fabricate" philosophy
-    `_derive_timings_from_alignment`'s own gap bridging already uses (ADR
-    0065 Decision 2), applied to an "this neighbor's data is untrustworthy"
-    gap instead of a "real inter-sentence silence" gap:
-
-    * ``start_ms`` = the previous cue's already-finalized ``end_ms`` (``0`` if
-      this is the first segment).
-    * ``end_ms`` = the *next plausible* segment's real, untouched ``start_ms``
-      (``total_ms`` if there is no later plausible segment — i.e. this is the
-      last segment, or every later segment is also implausible).
-
-    Segments are patched in increasing index order so that a run of two or
-    more *consecutive* implausible segments still anchors correctly: each
-    one's start is the previous one's just-computed end, so the run stays
-    contiguous. One documented consequence of that: within a consecutive run,
-    the first implausible segment absorbs the entire gap up to the next
-    plausible segment's start, and every later segment in that same run
-    collapses to zero width (they all share the same "next plausible
-    segment," so they all resolve to the same end boundary). This never
-    violates the ADR 0025 ordering/coverage invariants — cues stay strictly
-    ordered, touching, and non-overlapping — it is simply an even split this
-    ADR does not attempt, since #154's evidence is a single crushed segment
-    (never a run), and a multi-segment failure is a pathological case this
-    function only needs to *not break* on, not optimize for.
-
-    Requires ``implausible`` to be a strict, non-empty, non-total subset of
-    ``range(len(timings))`` — callers (`MediaPipeline.build`) are responsible
-    for routing the empty-set ("nothing implausible") and all-set ("every
-    segment implausible") cases elsewhere before calling this.
-    """
-    fixed = list(timings)
-    n = len(timings)
-    for i in sorted(implausible):
-        start = fixed[i - 1][1] if i > 0 else 0
-        next_plausible = next((j for j in range(i + 1, n) if j not in implausible), None)
-        end = timings[next_plausible][0] if next_plausible is not None else total_ms
-        fixed[i] = (start, end)
-    return fixed
 
 
 class MediaPipeline:
@@ -362,12 +314,19 @@ class MediaPipeline:
     (`_implausible_segment_indices`), because a real aligner (aeneas, in
     particular its pure-Python fallback mode) can crush one specific
     segment — most often, but not provably always, the last one — to a
-    near-zero duration while every other segment aligns correctly. Only the
-    segment(s) that fail this check fall back to a neighbor-anchored boundary
-    and lose their karaoke words (`_anchor_implausible_segments`); every other
-    segment's real derived boundary and words are untouched. Only if *every*
-    segment fails does the pipeline widen this to the whole-narration
-    `_allocate_timings` fallback described above.
+    near-zero duration while every other segment aligns correctly. The guard
+    affects ONLY karaoke word data, never cue timing: flagged segments lose
+    their words (degrading to ADR 0059's plain cue-level fade instead of a
+    garbled near-instant karaoke sweep), while every cue's boundary stays
+    exactly what `_derive_timings_from_alignment` produced. "Correcting" a
+    flagged boundary here would be illusory — PR #155's independent
+    re-review proved that anchoring an isolated implausible segment to its
+    neighbors is an identity operation on the derivation's contiguous,
+    endpoint-pinned output. The crushed cue window itself (e.g. #154's 52ms
+    LOOP cue) therefore persists; the boundary/root-cause fix is #154's
+    separate chunked per-beat alignment work. Only if *every* segment fails
+    does the pipeline widen this to the whole-narration `_allocate_timings`
+    fallback described above.
     """
 
     name = "pipeline"
@@ -465,21 +424,25 @@ class MediaPipeline:
                 # derived, but aeneas can still report a physically
                 # impossible speaking rate for one or more specific
                 # segments (most often, but not provably always, the last
-                # one). Unlike the branch above, this is NOT routed to the
-                # whole-narration `_allocate_timings` fallback — that would
-                # discard every segment's real alignment (including the
-                # segments that measured correctly) to fix a per-segment
-                # problem, and would fire on nearly every real multi-beat
-                # render. Instead only the flagged segments' boundaries and
-                # words are replaced; every other segment keeps its real
-                # derived boundary and words untouched.
+                # one). The response is word-data-only: the flagged
+                # segments' karaoke words are cleared below (a garbled
+                # near-instant sweep degrades to ADR 0059's plain cue-level
+                # fade), while every cue boundary — the flagged ones'
+                # included — stays exactly what
+                # `_derive_timings_from_alignment` returned. Recomputing a
+                # flagged boundary from its neighbors would change nothing:
+                # the derivation's output is contiguous and endpoint-pinned,
+                # so neighbor-anchoring an isolated implausible segment
+                # reproduces the same boundary exactly (proven in PR #155's
+                # independent re-review); the real boundary fix is #154's
+                # chunked per-beat alignment follow-up. Exception: if EVERY
+                # segment is implausible there is no real alignment left
+                # worth preserving, so treat it exactly like a total
+                # alignment failure (the whole-narration `_allocate_timings`
+                # fallback above, all cues word-free).
                 implausible_indices = _implausible_segment_indices(word_lists)
                 if implausible_indices:
                     if len(implausible_indices) == len(word_lists):
-                        # Pathological (no evidence this occurs in practice):
-                        # every segment failed plausibility, so there is no
-                        # trustworthy neighbor left to anchor to. Fall back
-                        # exactly like a total alignment failure.
                         logger.warning(
                             "word alignment implied an impossible speaking rate "
                             "(> %.1f words/sec) for every segment; captions "
@@ -492,14 +455,12 @@ class MediaPipeline:
                     else:
                         logger.warning(
                             "word alignment implied an impossible speaking rate "
-                            "(> %.1f words/sec) for segment(s) %s; only those "
-                            "cues fall back to a computed boundary and lose "
-                            "their karaoke words (ADR 0066)",
+                            "(> %.1f words/sec) for segment(s) %s; those cues "
+                            "lose their karaoke words and degrade to a plain "
+                            "cue-level fade — cue boundaries are unchanged "
+                            "(ADR 0066)",
                             MAX_PLAUSIBLE_WORDS_PER_SECOND,
                             sorted(implausible_indices),
-                        )
-                        timings = _anchor_implausible_segments(
-                            timings, implausible_indices, audio.duration_ms
                         )
 
         if timings is None:

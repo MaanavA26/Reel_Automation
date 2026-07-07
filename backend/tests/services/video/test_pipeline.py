@@ -294,7 +294,7 @@ def test_pipeline_wires_word_aligner_from_media_deps() -> None:
     #     constant across every segment since `FakeWordAligner` paces one word
     #     per `ms_per_word` with no gaps) must stay under the 8 wps
     #     plausibility guard, so every cue here keeps its real aligned words
-    #     rather than being redirected to the per-segment fallback.
+    #     rather than having them cleared by the word-data-only guard.
     aligner = FakeWordAligner(ms_per_word=150)
     pipeline = VideoPipeline(
         _research_deps(),
