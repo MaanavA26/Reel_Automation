@@ -65,6 +65,9 @@ def test_hermetic_settings_construction_ignores_dotenv_file(
     """
     (tmp_path / ".env").write_text("REEL_AUTOMATION_STOCK_API_KEY=leaked-from-file\n")
     monkeypatch.chdir(tmp_path)
+    # An ambient shell export would reach Settings via the (deliberately
+    # preserved) process-env source and false-fail this file-source-only test.
+    monkeypatch.delenv("REEL_AUTOMATION_STOCK_API_KEY", raising=False)
     assert Settings().stock_api_key.get_secret_value() == ""
 
 
