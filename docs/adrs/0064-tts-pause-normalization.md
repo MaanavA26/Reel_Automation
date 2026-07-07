@@ -1,4 +1,4 @@
-# ADR 0063: Uniform inter-sentence pause normalization via a `SegmentedTTSProvider` decorator
+# ADR 0064: Uniform inter-sentence pause normalization via a `SegmentedTTSProvider` decorator
 
 - **Status:** Accepted
 - **Date:** 2026-07-03
