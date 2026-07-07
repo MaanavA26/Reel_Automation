@@ -2,7 +2,10 @@
 
 Fully hermetic: the `FakeTTSProvider`, `FakeCompositionService`, and
 `FakeWordAligner` seams plus the real `DeterministicSubtitleService` (pure, no
-fake needed). No network, no ffmpeg, no aeneas.
+fake needed). No network, no ffmpeg, no aeneas. The ADR 0067 per-beat section
+additionally uses the real `NarrationSynthesizer` over the shared WAV-emitting
+stub (`tests.media.wav_fakes`) — still hermetic, but exercising the real
+splice/offset math end to end rather than faking the synthesizer.
 """
 
 from __future__ import annotations
@@ -11,11 +14,13 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from itertools import pairwise
+from pathlib import Path
 
 import pytest
 
-from app.media.alignment.base import AlignmentError, FakeWordAligner
+from app.media.alignment.base import AlignmentError, FakeWordAligner, split_words
 from app.media.composition.base import FakeCompositionService
+from app.media.narration import NarrationSynthesizer
 from app.media.pipeline import (
     MAX_PLAUSIBLE_WORDS_PER_SECOND,
     MediaPipeline,
@@ -29,6 +34,7 @@ from app.media.pipeline import (
 from app.media.schemas import DEFAULT_CAPTION_STYLE, CaptionStyle, WordSpan
 from app.media.tts.base import FakeTTSProvider
 from app.schemas.research_state import CreatorPacket, NarrativeOption
+from tests.media.wav_fakes import FileSink, WavFakeTTSProvider
 
 
 def _packet(*narratives: NarrativeOption) -> CreatorPacket:
@@ -775,3 +781,256 @@ def test_build_logs_no_plausibility_warning_for_realistic_alignment(
     assert (cues[1].start_ms, cues[1].end_ms) == (900, 1050)
     assert [w.text for w in cues[0].words] == ["one"]
     assert [w.text for w in cues[1].words] == ["two"]
+
+
+# --- per-beat narration synthesis + per-clip alignment (ADR 0067, issue #159) -
+#
+# The opt-in `narration_synthesizer` seam: cue timings come EXACTLY from the
+# synthesizer's construction-time offsets (never `_allocate_timings`, never
+# `_derive_timings_from_alignment`), the aligner runs once per clip against
+# that clip's own audio, per-clip failures are isolated, and the ADR 0066
+# guard stays word-data-only. Uses the real `NarrationSynthesizer` over the
+# shared WAV stub (1 ms/char at 8000 Hz — exact arithmetic), so these are
+# integration-shaped hermetic tests of the actual splice/offset math.
+
+# 7ms + 5ms clips at 1 ms/char; with pause_ms=100 the exact construction-time
+# spans are [(0, 107), (107, 112)] over a 112ms narration.
+_BEAT_SEGMENTS = ["one two", "three"]
+_BEAT_TIMINGS = [(0, 107), (107, 112)]
+
+
+def _per_beat_pipeline(
+    tmp_path: Path, *, word_aligner: object = None
+) -> tuple[MediaPipeline, FakeTTSProvider, WavFakeTTSProvider]:
+    """A pipeline on the per-beat path: real synthesizer, WAV-emitting inner TTS.
+
+    The pipeline's own `tts_provider` is a plain `FakeTTSProvider` so tests can
+    assert the per-beat path never touches it (the synthesizer wraps its own
+    inner provider — in production wiring both are the same instance).
+    """
+    inner = WavFakeTTSProvider(FileSink(tmp_path, "clip"))
+    synthesizer = NarrationSynthesizer(inner, FileSink(tmp_path, "final"), pause_ms=100)
+    pipeline_tts = FakeTTSProvider()
+    pipeline = MediaPipeline(
+        pipeline_tts,
+        FakeCompositionService(),
+        word_aligner=word_aligner,  # type: ignore[arg-type]
+        narration_synthesizer=synthesizer,
+    )
+    return pipeline, pipeline_tts, inner
+
+
+def test_build_per_beat_uses_exact_construction_offsets_not_estimation(tmp_path: Path) -> None:
+    """The load-bearing test for #159 / ADR 0067 (no-aligner shape).
+
+    Cue boundaries are the synthesizer's exact construction-time offsets —
+    known because the pipeline's collaborator spliced the audio itself — and
+    provably NOT `_allocate_timings`'s character-count guess (which disagrees
+    by design here: "one two" is 7/12ths of the text by characters but its cue
+    spans 107/112ths of the audio because the inter-beat gap belongs to it).
+    """
+    pipeline, pipeline_tts, inner = _per_beat_pipeline(tmp_path)
+    plan = asyncio.run(
+        pipeline.build(_packet(_narrative("Arc", "ignored")), segments=_BEAT_SEGMENTS)
+    )
+
+    cues = plan.captions.cues
+    assert [(c.start_ms, c.end_ms) for c in cues] == _BEAT_TIMINGS
+    assert plan.audio.duration_ms == 112
+    assert plan.audio.produced_via == "tts:per-beat+wavfake"
+    # The ADR 0025 invariant holds by construction on this path too.
+    assert cues[-1].end_ms == plan.audio.duration_ms == plan.video.duration_ms
+    # Provably not the char-count guess...
+    guessed = _allocate_timings(_BEAT_SEGMENTS, plan.audio.duration_ms)
+    assert guessed == [(0, 65), (65, 112)]
+    assert [(c.start_ms, c.end_ms) for c in cues] != guessed
+    # ...and no aligner means word-free cues, exactly like the legacy path.
+    assert all(cue.words == [] for cue in cues)
+    # Each beat was synthesized as its own clip; the pipeline's whole-narration
+    # provider was never consulted (no double synthesis).
+    assert [c.text for c in inner.calls] == _BEAT_SEGMENTS
+    assert pipeline_tts.calls == []
+
+
+def test_build_per_beat_aligns_each_clip_separately_and_offsets_words(tmp_path: Path) -> None:
+    # ms_per_word=200 keeps every clip's implied rate at 5 wps — under the
+    # ADR 0066 guard — so this exercises the plain per-clip attach path.
+    aligner = FakeWordAligner(ms_per_word=200)
+    pipeline, _, _ = _per_beat_pipeline(tmp_path, word_aligner=aligner)
+    plan = asyncio.run(
+        pipeline.build(_packet(_narrative("Arc", "ignored")), segments=_BEAT_SEGMENTS)
+    )
+
+    # One aligner call PER clip, each against that clip's own audio and that
+    # clip's single segment text — never the spliced narration.
+    assert len(aligner.calls) == 2
+    assert aligner.calls[0].segments == ["one two"]
+    assert aligner.calls[1].segments == ["three"]
+    # The wav stub's sink names clips in call order, so the aligner was handed
+    # each per-beat clip's own audio — never the spliced final narration.
+    assert aligner.calls[0].audio_path.endswith("clip-1.wav")
+    assert aligner.calls[1].audio_path.endswith("clip-2.wav")
+    assert aligner.calls[0].audio_path != plan.audio.audio_uri
+    assert aligner.calls[1].audio_path != plan.audio.audio_uri
+
+    # Word times are the fake's clip-relative cadence shifted by each clip's
+    # exact start offset: clip 0 starts at 0, clip 1 at 107.
+    cues = plan.captions.cues
+    assert [(w.text, w.start_ms, w.end_ms) for w in cues[0].words] == [
+        ("one", 0, 200),
+        ("two", 200, 400),
+    ]
+    assert [(w.text, w.start_ms, w.end_ms) for w in cues[1].words] == [
+        ("three", 107 + 0, 107 + 200)
+    ]
+    # Alignment attached words but changed no timing: still the exact offsets.
+    assert [(c.start_ms, c.end_ms) for c in cues] == _BEAT_TIMINGS
+
+
+class _FlakyPerClipAligner:
+    """A `WordAligner` stub that fails on one specific call and paces the rest.
+
+    Mirrors `FakeWordAligner`'s per-word cadence (clip-relative clock starting
+    at 0 each call) so the surviving clips produce plausible, assertable spans.
+    """
+
+    name = "flaky"
+
+    def __init__(self, *, fail_on_call: int, ms_per_word: int = 200) -> None:
+        self._fail_on_call = fail_on_call
+        self._ms_per_word = ms_per_word
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def align(self, *, audio_path: str, segments: Sequence[str]) -> list[list[WordSpan]]:
+        call_index = len(self.calls)
+        self.calls.append((audio_path, list(segments)))
+        if call_index == self._fail_on_call:
+            raise AlignmentError(f"synthetic per-clip failure on call {call_index}")
+        result: list[list[WordSpan]] = []
+        for segment in segments:
+            clock_ms = 0
+            spans: list[WordSpan] = []
+            for word in split_words(segment):
+                spans.append(
+                    WordSpan(text=word, start_ms=clock_ms, end_ms=clock_ms + self._ms_per_word)
+                )
+                clock_ms += self._ms_per_word
+            result.append(spans)
+        return result
+
+
+def test_build_per_beat_isolates_a_failing_clip(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The aligner fails on clip 1 only: that cue renders word-free, the other
+    # cue keeps its real per-clip words, and NO timing changes — the per-clip
+    # analogue of the legacy path's degrade posture, minus its all-or-nothing
+    # blast radius (legacy: one failure costs every cue's words).
+    aligner = _FlakyPerClipAligner(fail_on_call=1)
+    pipeline, _, _ = _per_beat_pipeline(tmp_path, word_aligner=aligner)
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(
+            pipeline.build(_packet(_narrative("Arc", "ignored")), segments=_BEAT_SEGMENTS)
+        )
+
+    cues = plan.captions.cues
+    assert len(aligner.calls) == 2  # the failure did not short-circuit clip 0
+    assert [w.text for w in cues[0].words] == ["one", "two"]
+    assert cues[1].words == []
+    assert [(c.start_ms, c.end_ms) for c in cues] == _BEAT_TIMINGS
+    assert any(
+        "per-clip word alignment failed for segment 1" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+class _ScriptedPerClipAligner:
+    """A `WordAligner` stub returning pre-built clip-relative spans per call."""
+
+    name = "scripted"
+
+    def __init__(self, spans_by_call: list[list[WordSpan]]) -> None:
+        self._spans_by_call = spans_by_call
+        self.calls = 0
+
+    async def align(self, *, audio_path: str, segments: Sequence[str]) -> list[list[WordSpan]]:
+        spans = self._spans_by_call[self.calls]
+        self.calls += 1
+        return [list(spans)]
+
+
+def test_build_per_beat_guard_clears_implausible_clip_words_only(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Clip 0 aligns plausibly (5 wps); clip 1 comes back crushed (#154's
+    # geometry: 5 words in 20ms, 250 wps). The ADR 0066 guard runs unchanged
+    # on the per-clip results and stays word-data-only: the crushed cue loses
+    # its words, the plausible cue keeps everything, and every boundary stays
+    # the exact construction-time offset.
+    plausible = [_span(w, i * 200, (i + 1) * 200) for i, w in enumerate(["one", "two"])]
+    crushed = [_span(f"w{i}", i * 4, (i + 1) * 4) for i in range(5)]
+    aligner = _ScriptedPerClipAligner([plausible, crushed])
+    pipeline, _, _ = _per_beat_pipeline(tmp_path, word_aligner=aligner)
+    segments = ["one two", "w0 w1 w2 w3 w4"]
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(pipeline.build(_packet(_narrative("Arc", "ignored")), segments=segments))
+
+    cues = plan.captions.cues
+    assert [w.text for w in cues[0].words] == ["one", "two"]
+    assert cues[1].words == []
+    # Exact construction offsets for THESE segments (7ms + 14ms clips, 100ms gap).
+    assert [(c.start_ms, c.end_ms) for c in cues] == [(0, 107), (107, 121)]
+    assert any(
+        "impossible speaking rate" in record.getMessage() and "(ADR 0067)" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_build_per_beat_all_clips_implausible_keeps_exact_timings(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Unlike the legacy path (where all-implausible alignment poisons the
+    # DERIVED boundaries and rightly widens to `_allocate_timings`), the
+    # per-beat path's boundaries never came from alignment — so even a fully
+    # implausible result only clears words, and every exact boundary stands.
+    crushed_a = [_span(f"a{i}", i * 4, (i + 1) * 4) for i in range(5)]
+    crushed_b = [_span(f"b{i}", i * 4, (i + 1) * 4) for i in range(5)]
+    aligner = _ScriptedPerClipAligner([crushed_a, crushed_b])
+    pipeline, _, _ = _per_beat_pipeline(tmp_path, word_aligner=aligner)
+    with caplog.at_level(logging.WARNING, logger="app.media.pipeline"):
+        plan = asyncio.run(
+            pipeline.build(_packet(_narrative("Arc", "ignored")), segments=_BEAT_SEGMENTS)
+        )
+
+    cues = plan.captions.cues
+    assert all(cue.words == [] for cue in cues)
+    assert [(c.start_ms, c.end_ms) for c in cues] == _BEAT_TIMINGS
+    guessed = _allocate_timings(_BEAT_SEGMENTS, plan.audio.duration_ms)
+    assert [(c.start_ms, c.end_ms) for c in cues] != guessed
+    assert any(
+        "impossible speaking rate" in record.getMessage() and "[0, 1]" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_build_without_narration_synthesizer_is_the_unchanged_legacy_path() -> None:
+    """The ADR 0067 regression anchor: seam absent -> pre-0067 behavior exactly.
+
+    One whole-narration synthesis call (the beats joined with newlines, never
+    per-beat), cue boundaries from `_allocate_timings`'s character-count guess
+    (no aligner configured), and the ADR 0025 invariant — the same outcomes
+    the pre-0067 suite locked, re-asserted here in one place as the explicit
+    "default is byte-identical" contract.
+    """
+    tts = FakeTTSProvider(ms_per_char=10)
+    pipeline = MediaPipeline(tts, FakeCompositionService())
+    plan = asyncio.run(
+        pipeline.build(_packet(_narrative("Arc", "ignored")), segments=["one two", "three"])
+    )
+
+    assert len(tts.calls) == 1
+    assert tts.calls[0].text == "one two\nthree"
+    expected = _allocate_timings(["one two", "three"], plan.audio.duration_ms)
+    assert [(c.start_ms, c.end_ms) for c in plan.captions.cues] == expected
+    assert plan.captions.cues[-1].end_ms == plan.audio.duration_ms
+    assert all(cue.words == [] for cue in plan.captions.cues)

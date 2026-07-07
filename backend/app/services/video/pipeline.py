@@ -161,7 +161,8 @@ class VideoPipeline:
 
     Constructor DI mirrors `MediaPipeline`/`IngestionService`: the research and
     media collaborator bundles are required; a `MediaPipeline` is built over the
-    injected `MediaDeps` (including its optional ``word_aligner``, ADR 0063).
+    injected `MediaDeps` (including its optional ``word_aligner``, ADR 0063, and
+    optional ``narration_synthesizer``, ADR 0067).
     ``max_syntheses`` is the research revision-loop cap, forwarded to
     `run_research` (the same knob the API exposes). A `ScriptBuilder` (pure,
     stateless — CLAUDE.md §4) assembles the full retention arc per run; it needs
@@ -185,6 +186,7 @@ class VideoPipeline:
             media_deps.composition,
             voice=media_deps.voice,
             word_aligner=media_deps.word_aligner,
+            narration_synthesizer=media_deps.narration_synthesizer,
         )
         self._script_builder = ScriptBuilder()
 

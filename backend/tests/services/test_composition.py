@@ -360,3 +360,31 @@ def test_aeneas_python_bin_set_wires_a_real_aligner(tmp_path: object) -> None:
     # aeneas is a subprocess contract, not a network seam -> no new closable (same
     # count as the Kokoro-only, no-aeneas keystone bundle for an identical config).
     assert len(bundle.closables) == 1
+
+
+# --- Per-beat narration synthesizer wiring (ADR 0067) -------------------------
+
+
+def test_narration_per_beat_unset_leaves_synthesizer_unset(tmp_path: object) -> None:
+    # The regression guard: narration_per_beat false (the default) -> MediaDeps
+    # ends up with narration_synthesizer=None, identical to the pre-ADR-0067
+    # whole-narration behavior.
+    deps = build_media_deps(_settings(media_output_dir=str(tmp_path))).deps
+    assert deps.narration_synthesizer is None
+
+
+def test_narration_per_beat_set_wires_a_real_synthesizer(tmp_path: object) -> None:
+    # Setting narration_per_beat constructs a real NarrationSynthesizer over the
+    # same supervised TTS provider the pipeline consumes — a deterministic tool
+    # over already-built seams, so the closables count is unchanged.
+    from app.media.narration import NarrationSynthesizer
+
+    bundle = build_media_deps(
+        _settings(
+            media_output_dir=str(tmp_path),
+            narration_per_beat=True,
+        )
+    )
+    assert isinstance(bundle.deps.narration_synthesizer, NarrationSynthesizer)
+    assert bundle.deps.narration_synthesizer._tts is bundle.deps.tts  # type: ignore[attr-defined]
+    assert len(bundle.closables) == 1

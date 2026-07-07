@@ -57,6 +57,7 @@ from app.media.alignment.aeneas import AeneasAligner
 from app.media.alignment.base import WordAligner
 from app.media.composition.base import CompositionService
 from app.media.composition.ffmpeg import FfmpegCompositionService
+from app.media.narration import NarrationSynthesizer
 from app.media.tts.base import TTSProvider
 from app.media.tts.huggingface import HuggingFaceTtsProvider
 from app.media.tts.kokoro import KokoroTtsProvider
@@ -365,6 +366,11 @@ class MediaDeps:
     `AeneasAligner` joins only when ``settings.aeneas_python_bin`` is set, exactly
     mirroring how ``visuals``/``visual_sink`` join only when ``stock_api_key`` is
     set; ``None`` reproduces the pre-ADR-0063 cue-level-only behavior.
+    ``narration_synthesizer`` (ADR 0067) follows the same additive pattern: a
+    `NarrationSynthesizer` over ``tts`` joins only when
+    ``settings.narration_per_beat`` is true, switching `MediaPipeline` onto the
+    per-beat exact-cue-boundary path; ``None`` (the default) keeps the legacy
+    whole-narration path byte-identical.
     """
 
     tts: TTSProvider
@@ -382,6 +388,12 @@ class MediaDeps:
     # `AeneasAligner` pointed at that interpreter. `MediaPipeline` degrades to
     # cue-level captions whenever this is `None` — never a hard requirement.
     word_aligner: WordAligner | None = None
+    # Per-beat narration synthesis (ADR 0067): `None` unless
+    # `settings.narration_per_beat` is true, in which case it is a
+    # `NarrationSynthesizer` over `tts` and `MediaPipeline` takes the
+    # exact-by-construction cue-boundary path (with per-clip alignment when
+    # `word_aligner` is also present). `None` keeps today's whole-narration path.
+    narration_synthesizer: NarrationSynthesizer | None = None
 
 
 @dataclass(frozen=True)
@@ -507,6 +519,11 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
       karaoke captions. ``None`` (the default, no setting required) leaves
       `MediaPipeline`'s ``word_aligner`` unset, i.e. today's cue-level-only
       captions, unchanged.
+    * A `NarrationSynthesizer` (ADR 0067) when ``narration_per_beat`` is true —
+      per-beat synthesis with exact construction-time cue boundaries (and
+      per-clip alignment when the aligner above is also wired), sharing the
+      same filesystem audio sink for its final spliced WAV. ``None`` (the
+      default) keeps the whole-narration path byte-identical.
 
     The TTS supervisor needs a `ModelRouter` (the §4 judgment seam), so this
     builder mints its own (via `_build_router`) — an unconfigured model backend
@@ -564,6 +581,15 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
     if resolved.aeneas_python_bin:
         word_aligner = AeneasAligner(python_bin=resolved.aeneas_python_bin)
 
+    # Optional per-beat narration synthesis (ADR 0067): wraps the same supervised
+    # TTS provider and persists its final spliced WAV via the same filesystem
+    # sink (the per-beat clips land there too, via the provider's own sink —
+    # they are consumed by per-clip alignment, not scratch). A deterministic
+    # tool over already-built seams, so nothing is added to ``closables``.
+    narration_synthesizer: NarrationSynthesizer | None = None
+    if resolved.narration_per_beat:
+        narration_synthesizer = NarrationSynthesizer(tts, _audio_sink)
+
     deps = MediaDeps(
         tts=tts,
         composition=composition,
@@ -572,6 +598,7 @@ def build_media_deps(settings: Settings | None = None) -> MediaBundle:
         voice=resolved.tts_voice,
         generative_visuals=generative_visuals,
         word_aligner=word_aligner,
+        narration_synthesizer=narration_synthesizer,
     )
     return MediaBundle(deps=deps, closables=tuple(closables))
 

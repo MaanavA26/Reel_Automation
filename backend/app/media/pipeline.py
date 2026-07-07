@@ -23,9 +23,27 @@ place the media layer is allowed to depend on the Deep Research schema
 
 Timing invariant
 -----------------
-`CompositionService.render` takes a **single** `SynthesizedSpeech`, so narration
-is synthesized **once** over the whole script. Caption timings are allocated
-across beats one of three ways (ADR 0065 issue #152; ADR 0066 issue #154):
+`CompositionService.render` takes a **single** `SynthesizedSpeech`, so the
+pipeline always hands composition one final narration artifact. How that
+artifact and the per-beat cue timings are produced depends on whether the
+optional per-beat synthesizer seam is configured (ADR 0067, issue #159):
+
+**`narration_synthesizer` configured (the per-beat path, ADR 0067):** the
+`NarrationSynthesizer` synthesizes each beat as its own clip and splices them
+itself, so every cue's ``(start_ms, end_ms)`` is **known exactly at synthesis
+time** — no estimation step of any kind (`_derive_timings_from_alignment` and
+`_allocate_timings` are never consulted on this path). If a `word_aligner` is
+also configured, each *clip* is aligned separately against its own segment
+(short alignment tasks — the empirically validated antidote to aeneas's
+cumulative long-audio DTW drift, #154: 52ms → 1.6s on the same tail content)
+and the word times are offset by the clip's known start; a per-clip failure or
+an ADR 0066 implausibility flag costs only that cue's karaoke words, never any
+cue timing.
+
+**No `narration_synthesizer` (the legacy whole-narration path, byte-identical
+to before ADR 0067):** narration is synthesized **once** over the whole script
+and caption timings are allocated across beats one of three ways (ADR 0065
+issue #152; ADR 0066 issue #154):
 
 * **No `word_aligner` configured, or alignment fails/can't be reconciled into
   full coverage:** `_allocate_timings`'s **cumulative, character-count
@@ -62,6 +80,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.media.alignment.base import AlignmentError, WordAligner
 from app.media.composition.base import CompositionService
+from app.media.narration import NarrationSynthesizer
 from app.media.schemas import (
     DEFAULT_CAPTION_STYLE,
     CaptionStyle,
@@ -327,6 +346,18 @@ class MediaPipeline:
     separate chunked per-beat alignment work. Only if *every* segment fails
     does the pipeline widen this to the whole-narration `_allocate_timings`
     fallback described above.
+
+    ``narration_synthesizer`` is **optional** (default ``None``, ADR 0067,
+    issue #159) and is that chunked per-beat root-cause fix. When configured,
+    it replaces everything above about how timings are *estimated*: the
+    synthesizer builds the final audio from per-beat clips itself, so cue
+    boundaries are exact at construction (`_narrate_per_beat`), the aligner —
+    if present — runs per clip (short tasks, no cumulative drift) with word
+    times offset to the narration clock, and the ADR 0066 plausibility guard
+    still applies word-data-only per clip. Estimation
+    (`_derive_timings_from_alignment` / `_allocate_timings`) is never
+    consulted on that path. ``None`` reproduces the pre-ADR-0067 behavior
+    above byte-identically.
     """
 
     name = "pipeline"
@@ -339,12 +370,14 @@ class MediaPipeline:
         *,
         voice: str = "narrator",
         word_aligner: WordAligner | None = None,
+        narration_synthesizer: NarrationSynthesizer | None = None,
     ) -> None:
         self._tts = tts_provider
         self._composition = composition_service
         self._subtitles: SubtitleService = subtitle_service or DeterministicSubtitleService()
         self._voice = voice
         self._word_aligner = word_aligner
+        self._narration = narration_synthesizer
 
     async def build(
         self,
@@ -368,10 +401,13 @@ class MediaPipeline:
         does not pass beats explicitly. The caller (`VideoPipeline`) instead
         passes the full `ScriptBuilder`-produced HOOK→BUILD→PAYOFF→LOOP beat texts,
         so the pipeline narrates/captions the whole retention arc rather than only
-        the narrative's own outline lines. Either way, the resulting segments are
-        synthesized once; caption timings then come from real word alignment
-        when a `word_aligner` is configured and succeeds, or from
-        `_allocate_timings`'s character-count guess otherwise (ADR 0065); the
+        the narrative's own outline lines. Either way, the segments are narrated
+        via one of the two paths in the module docstring's "Timing invariant"
+        section — per-beat exact-by-construction timings when a
+        ``narration_synthesizer`` is configured (ADR 0067), otherwise the
+        legacy single-synthesis path whose caption timings come from real word
+        alignment when a `word_aligner` is configured and succeeds, or from
+        `_allocate_timings`'s character-count guess otherwise (ADR 0065). The
         caption track is built, and the video is composed with ``caption_style``
         (ADR 0059) passed through to `CompositionService.render`. Raises
         `MediaPipelineError` if the packet has no narrative at that index or the
@@ -385,6 +421,47 @@ class MediaPipeline:
                 f"narrative {narrative.title!r} produced no narratable script segments"
             )
 
+        if self._narration is not None:
+            audio, timings, word_lists, implausible_indices = await self._narrate_per_beat(
+                self._narration, segments
+            )
+        else:
+            audio, timings, word_lists, implausible_indices = await self._narrate_whole(segments)
+
+        captions = self._subtitles.build_track(segments=segments, timings=timings)
+        if word_lists is not None:
+            for i, (cue, spans) in enumerate(zip(captions.cues, word_lists, strict=True)):
+                cue.words = [] if i in implausible_indices else list(spans)
+
+        video = await self._composition.render(
+            audio=audio,
+            captions=captions,
+            visual_uris=list(visual_uris or []),
+            caption_style=caption_style,
+        )
+
+        return MediaPlan(
+            source_packet_id=packet.id,
+            narrative_title=narrative.title,
+            script_segments=segments,
+            audio=audio,
+            captions=captions,
+            video=video,
+            produced_via=f"media:{self.name}",
+        )
+
+    async def _narrate_whole(
+        self, segments: list[str]
+    ) -> tuple[SynthesizedSpeech, list[tuple[int, int]], list[list[WordSpan]] | None, set[int]]:
+        """The legacy whole-narration path — behavior byte-identical to pre-ADR-0067.
+
+        This is `build()`'s original synthesis/timing logic moved verbatim
+        into its own method when the per-beat path (ADR 0067) was added, so
+        the two paths dispatch cleanly; nothing inside it changed. Returns
+        the final audio, the per-segment cue timings, the word lists to
+        attach (``None`` when nothing may be attached), and the ADR 0066
+        implausible indices whose cues must render word-free.
+        """
         # Synthesize the whole narration once: the composition seam takes a
         # single audio artifact, so per-segment synthesis has nowhere to go.
         narration = "\n".join(segments)
@@ -466,27 +543,111 @@ class MediaPipeline:
         if timings is None:
             timings = _allocate_timings(segments, audio.duration_ms)
 
-        captions = self._subtitles.build_track(segments=segments, timings=timings)
-        if word_lists is not None:
-            for i, (cue, spans) in enumerate(zip(captions.cues, word_lists, strict=True)):
-                cue.words = [] if i in implausible_indices else list(spans)
+        return audio, timings, word_lists, implausible_indices
 
-        video = await self._composition.render(
-            audio=audio,
-            captions=captions,
-            visual_uris=list(visual_uris or []),
-            caption_style=caption_style,
-        )
+    async def _narrate_per_beat(
+        self, narration: NarrationSynthesizer, segments: list[str]
+    ) -> tuple[SynthesizedSpeech, list[tuple[int, int]], list[list[WordSpan]] | None, set[int]]:
+        """The per-beat path (ADR 0067): exact-by-construction cue timings.
 
-        return MediaPlan(
-            source_packet_id=packet.id,
-            narrative_title=narrative.title,
-            script_segments=segments,
-            audio=audio,
-            captions=captions,
-            video=video,
-            produced_via=f"media:{self.name}",
-        )
+        The `NarrationSynthesizer` synthesized and spliced the per-beat clips
+        itself, so its ``cue_timings`` *are* the cue boundaries — exact
+        synthesis-time truth (contiguous, gap-inclusive, last end == total
+        duration by construction). No estimation ever runs here:
+        `_derive_timings_from_alignment` and `_allocate_timings` belong to
+        the legacy path only.
+
+        When a `word_aligner` is configured, each clip is aligned separately
+        against its own single segment (`_align_clip_words`) — the short-task
+        shape #154 empirically validated against aeneas's cumulative
+        long-audio drift — and word times are offset onto the narration clock
+        by the clip's known start. Failures are isolated per clip: a failed
+        clip yields an empty word list (that cue renders as ADR 0059's plain
+        cue-level fade) and no other cue is affected. The ADR 0066
+        plausibility guard then runs unchanged on the per-clip results,
+        word-data-only as always; because cue boundaries here never come from
+        alignment, there is no boundary fallback to widen to — even an
+        all-implausible result only clears words, keeping every exact
+        boundary (unlike the legacy path, where all-implausible alignment
+        also poisons the derived boundaries).
+
+        A per-beat *synthesis* failure, by contrast, propagates (the
+        `NarrationSynthesizer` contract): silently narrating a partial script
+        is worse than failing the render.
+        """
+        beat = await narration.synthesize(segments=segments, voice=self._voice)
+        timings = list(beat.cue_timings)
+        if self._word_aligner is None:
+            return beat.speech, timings, None, set()
+
+        word_lists: list[list[WordSpan]] = []
+        for i, segment in enumerate(segments):
+            word_lists.append(
+                await self._align_clip_words(
+                    self._word_aligner,
+                    clip_uri=beat.clip_uris[i],
+                    segment=segment,
+                    segment_index=i,
+                    offset_ms=timings[i][0],
+                )
+            )
+
+        implausible_indices = _implausible_segment_indices(word_lists)
+        if implausible_indices:
+            logger.warning(
+                "per-clip word alignment implied an impossible speaking rate "
+                "(> %.1f words/sec) for segment(s) %s; those cues lose their "
+                "karaoke words and degrade to a plain cue-level fade — cue "
+                "boundaries are exact by construction and unchanged (ADR 0067)",
+                MAX_PLAUSIBLE_WORDS_PER_SECOND,
+                sorted(implausible_indices),
+            )
+        return beat.speech, timings, word_lists, implausible_indices
+
+    @staticmethod
+    async def _align_clip_words(
+        aligner: WordAligner,
+        *,
+        clip_uri: str,
+        segment: str,
+        segment_index: int,
+        offset_ms: int,
+    ) -> list[WordSpan]:
+        """Best-effort word alignment of ONE beat's clip (ADR 0067).
+
+        Calls the injected `WordAligner` with the clip's own audio and its
+        single segment text (the existing `align` contract, just with a
+        one-element ``segments`` — no aligner API change), then shifts the
+        returned clip-relative word times onto the narration clock by
+        ``offset_ms`` (the clip's exact start in the spliced audio). *Any*
+        failure — a missing tool, a non-zero exit, a malformed sync map, a
+        count violation — is logged with the segment index and degrades to an
+        empty list, so exactly one cue loses karaoke while every other clip's
+        alignment stands: the per-clip analogue of `_align_words`'s
+        log-and-degrade posture, minus its all-or-nothing blast radius.
+        """
+        try:
+            clip_word_lists = await aligner.align(audio_path=clip_uri, segments=[segment])
+            if len(clip_word_lists) != 1:
+                raise AlignmentError(
+                    f"aligner returned {len(clip_word_lists)} segment timing lists for 1 segment"
+                )
+        except Exception:
+            logger.warning(
+                "per-clip word alignment failed for segment %d; that cue degrades "
+                "to cue-level fade, other cues are unaffected (ADR 0067)",
+                segment_index,
+                exc_info=True,
+            )
+            return []
+        return [
+            WordSpan(
+                text=span.text,
+                start_ms=span.start_ms + offset_ms,
+                end_ms=span.end_ms + offset_ms,
+            )
+            for span in clip_word_lists[0]
+        ]
 
     @staticmethod
     async def _align_words(

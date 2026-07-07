@@ -19,6 +19,7 @@ coherent with both.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -53,6 +54,7 @@ from app.agents.source_discovery import (
 from app.agents.synthesis import SynthesisAgent, _FindingDraft, _SynthesisOutput
 from app.media.alignment.base import FakeWordAligner
 from app.media.composition.base import FakeCompositionService
+from app.media.narration import NarrationSynthesizer
 from app.media.schemas import DEFAULT_CAPTION_STYLE, CaptionStyle
 from app.media.tts.base import FakeTTSProvider
 from app.media.visuals.base import FakeVisualProvider, VisualClip, VisualKind
@@ -69,6 +71,7 @@ from app.services.search.base import SearchResult
 from app.services.search.fakes import FakeSearchProvider
 from app.services.video import VideoArtifact, VideoPipeline, VideoPipelineError
 from app.workflows.deep_research import ResearchDeps
+from tests.media.wav_fakes import FileSink, WavFakeTTSProvider
 
 # --- Fake-backed research deps (mirror tests/integration/test_pipeline_e2e) ---
 
@@ -315,6 +318,32 @@ def test_pipeline_default_media_deps_leaves_word_aligner_unset() -> None:
     pipeline = VideoPipeline(_research_deps(), _media_deps())
     bundle = asyncio.run(pipeline.create_bundle("topic"))
     assert all(cue.words == [] for cue in bundle.media_plan.captions.cues)
+
+
+def test_pipeline_wires_narration_synthesizer_from_media_deps(tmp_path: Path) -> None:
+    # MediaDeps.narration_synthesizer (ADR 0067) must actually reach the
+    # MediaPipeline this pipeline constructs: narration is then synthesized
+    # per beat via the synthesizer's inner provider — one call per arc beat,
+    # never MediaDeps.tts's single whole-narration call.
+    inner = WavFakeTTSProvider(FileSink(tmp_path, "clip"))
+    synthesizer = NarrationSynthesizer(inner, FileSink(tmp_path, "final"), pause_ms=100)
+    tts = FakeTTSProvider(ms_per_char=10)
+    pipeline = VideoPipeline(
+        _research_deps(),
+        MediaDeps(
+            tts=tts,
+            composition=FakeCompositionService(),
+            narration_synthesizer=synthesizer,
+        ),
+    )
+    bundle = asyncio.run(pipeline.create_bundle("topic"))
+    # Each ScriptBuilder arc beat became its own synthesis call, in order...
+    assert [c.text for c in inner.calls] == bundle.media_plan.script_segments
+    # ...and the whole-narration provider was never consulted.
+    assert tts.calls == []
+    # The ADR 0025 invariant holds on the per-beat path end to end.
+    plan = bundle.media_plan
+    assert plan.captions.cues[-1].end_ms == plan.audio.duration_ms == plan.video.duration_ms
 
 
 def test_pipeline_passes_narrative_through_to_composition() -> None:

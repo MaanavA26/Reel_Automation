@@ -55,7 +55,12 @@ Design decisions, made explicit rather than left implicit:
    provider's audio to be mono 16-bit PCM WAV (what every in-repo adapter that
    calls `encode_wav_pcm16` emits, e.g. Kokoro) — a non-WAV or differently
    shaped clip (e.g. a vendor's compressed MP3 response from `HttpTtsProvider`)
-   raises `SegmentedTtsError` rather than silently mis-decoding.
+   raises `SegmentedTtsError` rather than silently mis-decoding. The
+   decode/silence/splice primitives themselves now live in the shared
+   `app.media.audio` module (ADR 0067 — the per-beat `NarrationSynthesizer`
+   reuses the identical math); this provider normalizes that module's
+   `AudioProcessingError` to its own `SegmentedTtsError`, so its public API
+   and error contract are unchanged.
 4. **Sample-rate agreement is required, never silently resampled.** All
    per-sentence clips must share one sample rate (expected, since one provider
    + one voice produced all of them); a mismatch raises `SegmentedTtsError`.
@@ -82,24 +87,22 @@ Design decisions, made explicit rather than left implicit:
 
 from __future__ import annotations
 
-import array
-import io
 import re
-import wave
-from collections.abc import Sequence
 
-from app.media.composition.ffmpeg import CompositionError, resolve_local_path
+# DEFAULT_PAUSE_MS moved to `app.media.audio` (its shared home, ADR 0067) and is
+# re-exported here unchanged so existing importers of this module keep working.
+from app.media.audio import (
+    DEFAULT_PAUSE_MS,
+    AudioProcessingError,
+    read_wav_clip,
+    splice_with_pauses,
+)
 from app.media.schemas import SynthesizedSpeech
 from app.media.tts.base import TTSProvider
 from app.media.tts.http_tts import AudioSink
 from app.media.tts.kokoro import duration_ms_from_samples, encode_wav_pcm16
 
 PROVIDER_NAME = "segmented"
-
-#: A natural short breath-gap length in milliseconds. A reasonable starting
-#: point, not a scientifically derived optimum — kept as a named constant so
-#: it is easy to tune later once real renders are evaluated for naturalness.
-DEFAULT_PAUSE_MS = 300
 
 #: Splits on a sentence-ending mark followed by whitespace. A pragmatic
 #: simplification (see the module docstring's Decision 1): it does not
@@ -130,68 +133,6 @@ def split_into_sentences(text: str) -> list[str]:
     known abbreviation false-split limitation.
     """
     return [stripped for part in _SENTENCE_BOUNDARY.split(text) if (stripped := part.strip())]
-
-
-def _decode_wav_pcm16(audio_bytes: bytes) -> tuple[list[float], int]:
-    """Decode mono 16-bit PCM WAV bytes to floats in ``[-1, 1]`` + sample rate.
-
-    Pure, stdlib-only (`wave` + `array`) — the precise inverse of
-    `encode_wav_pcm16`: each int16 frame is divided by ``32767.0`` (the same
-    constant the encoder scales by), so round-tripping introduces no
-    *additional* clipping or precision loss beyond the int16 quantization
-    already baked into the source WAV. Requires mono/16-bit input (what every
-    in-repo `encode_wav_pcm16` caller emits); raises `SegmentedTtsError` on any
-    other WAV shape or an undecodable blob, rather than silently misreading
-    the samples.
-    """
-    try:
-        with wave.open(io.BytesIO(audio_bytes), "rb") as wav_in:
-            if wav_in.getnchannels() != 1 or wav_in.getsampwidth() != 2:
-                raise SegmentedTtsError(
-                    "SegmentedTTSProvider only supports mono 16-bit PCM WAV clips from "
-                    f"the wrapped provider, got {wav_in.getnchannels()} channel(s) at "
-                    f"{wav_in.getsampwidth() * 8}-bit"
-                )
-            sample_rate = wav_in.getframerate()
-            raw_frames = wav_in.readframes(wav_in.getnframes())
-    except wave.Error as exc:
-        raise SegmentedTtsError(
-            f"could not decode the wrapped provider's clip as WAV: {exc}"
-        ) from exc
-
-    pcm = array.array("h")  # signed 16-bit, matches encode_wav_pcm16's output
-    pcm.frombytes(raw_frames)
-    samples = [value / 32767.0 for value in pcm]
-    return samples, sample_rate
-
-
-def _splice_with_pauses(
-    clips: Sequence[tuple[list[float], int]], pause_ms: int
-) -> tuple[list[float], int]:
-    """Concatenate decoded per-sentence clips with a fixed silence gap. Pure.
-
-    Requires every clip to share one sample rate (expected — one provider +
-    one voice produced all of them); a mismatch raises `SegmentedTtsError`
-    rather than silently resampling. The gap is inserted between every pair of
-    clips only (never before the first or after the last).
-    """
-    if not clips:
-        raise SegmentedTtsError("no decoded clips to splice")
-
-    sample_rate = clips[0][1]
-    rates = {rate for _, rate in clips}
-    if len(rates) > 1:
-        raise SegmentedTtsError(
-            f"per-sentence sample rates disagree, cannot concatenate: {sorted(rates)!r}"
-        )
-
-    gap: list[float] = [0.0] * round(pause_ms * sample_rate / 1000)
-    combined: list[float] = []
-    for index, (samples, _) in enumerate(clips):
-        if index > 0:
-            combined.extend(gap)
-        combined.extend(samples)
-    return combined, sample_rate
 
 
 class SegmentedTTSProvider:
@@ -228,8 +169,9 @@ class SegmentedTTSProvider:
         no pause, no decode/re-encode round trip, byte-identical result to
         calling it directly. Two or more sentences are synthesized
         sequentially via the wrapped provider (any failure propagates
-        unchanged — see Decision 6), decoded, spliced with `_splice_with_pauses`,
-        re-encoded, and persisted via this provider's own `sink`.
+        unchanged — see Decision 6), decoded, spliced with the shared
+        `app.media.audio.splice_with_pauses`, re-encoded, and persisted via
+        this provider's own `sink`.
         """
         sentences = split_into_sentences(text)
         if not sentences:
@@ -243,7 +185,10 @@ class SegmentedTTSProvider:
             clips.append(await self._inner.synthesize(text=sentence, voice=voice))
 
         decoded = [self._read_pcm_samples(clip.audio_uri) for clip in clips]
-        samples, sample_rate = _splice_with_pauses(decoded, self._pause_ms)
+        try:
+            samples, sample_rate = splice_with_pauses(decoded, self._pause_ms)
+        except AudioProcessingError as exc:
+            raise SegmentedTtsError(str(exc)) from exc
 
         audio_bytes = encode_wav_pcm16(samples, sample_rate)
         duration_ms = duration_ms_from_samples(len(samples), sample_rate)
@@ -260,13 +205,13 @@ class SegmentedTTSProvider:
     def _read_pcm_samples(audio_uri: str) -> tuple[list[float], int]:
         """Resolve + read a per-sentence clip's URI and decode it to PCM.
 
-        Reuses `resolve_local_path` (the same URI-resolution convention the
-        ffmpeg composition adapter uses) rather than reimplementing it,
-        normalizing its `CompositionError` to this seam's own error type —
-        the same pattern `AeneasAligner` uses for the identical reuse.
+        Delegates to the shared `app.media.audio.read_wav_clip` (which reuses
+        `resolve_local_path`, the same URI-resolution convention the ffmpeg
+        composition adapter uses), normalizing its `AudioProcessingError` to
+        this seam's own error type — the same pattern `AeneasAligner` uses
+        for the identical reuse.
         """
         try:
-            path = resolve_local_path(audio_uri)
-        except CompositionError as exc:
+            return read_wav_clip(audio_uri)
+        except AudioProcessingError as exc:
             raise SegmentedTtsError(str(exc)) from exc
-        return _decode_wav_pcm16(path.read_bytes())
