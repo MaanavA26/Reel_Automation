@@ -251,5 +251,5 @@ before/after numbers); every existing degrade-path test (`aligner raises`,
   construction rather than by trusting the aligner), ADR 0059 (ASS captions /
   `_format_karaoke_body`'s clamp, left untouched), ADR 0060 (the
   Definition-of-Done caption-coverage expectation §Decision 2's gap-bridging
-  choice serves), ADR 0063 (wired the aligner into the production path this
+  choice serves), ADR 0064 (wired the aligner into the production path this
   ADR's fix now benefits from)
