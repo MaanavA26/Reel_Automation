@@ -163,6 +163,18 @@ class Settings(BaseSettings):
     # align time, not at settings load time.
     aeneas_python_bin: str | None = None
 
+    # Per-beat narration synthesis + per-clip alignment (ADR 0067, issue #159 —
+    # the root-cause fix direction for the #146/#154 caption-timing bugs). When
+    # true, the composition root wires a `NarrationSynthesizer` into
+    # `MediaPipeline`: each script beat is synthesized as its own clip and
+    # spliced with a uniform gap, so cue boundaries are exact at synthesis time,
+    # and (when `aeneas_python_bin` is also set) word alignment runs per clip —
+    # short tasks, immune to aeneas's cumulative long-audio DTW drift (#154).
+    # False (the default) keeps the whole-narration path byte-identical to
+    # pre-ADR-0067 behavior, mirroring `aeneas_python_bin`'s additive opt-in
+    # pattern so the live rollout is explicit and reversible.
+    narration_per_beat: bool = False
+
     # NVIDIA TTS NIM backend (ADR 0047, optional fallback). Wired into the router
     # only when `nvidia_tts_api_key` is set; reuses the operator's NVIDIA build
     # key but on the *speech* endpoint (a distinct base_url from the LLM NIM).
