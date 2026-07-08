@@ -72,6 +72,14 @@ def test_decode_rejects_undecodable_bytes() -> None:
         decode_wav_pcm16(b"definitely not a wav file")
 
 
+def test_decode_rejects_empty_and_truncated_bytes() -> None:
+    # `wave.open` raises bare EOFError (not `wave.Error`) on empty/truncated
+    # input — both must still normalize to the module's own error type.
+    for bad in (b"", b"RIFF\x00\x00"):
+        with pytest.raises(AudioProcessingError, match="could not decode"):
+            decode_wav_pcm16(bad)
+
+
 # --- silence ------------------------------------------------------------------
 
 
@@ -154,3 +162,19 @@ def test_read_wav_clip_resolves_file_uri_and_decodes(tmp_path: Path) -> None:
 def test_read_wav_clip_unresolvable_scheme_normalized(tmp_path: Path) -> None:
     with pytest.raises(AudioProcessingError):
         read_wav_clip("fake://not-a-real-file.wav")
+
+
+def test_read_wav_clip_missing_file_normalized(tmp_path: Path) -> None:
+    # A resolvable URI whose file does not exist must surface as the module's
+    # own error type — never a raw FileNotFoundError/OSError.
+    missing = tmp_path / "vanished.wav"
+    with pytest.raises(AudioProcessingError, match="could not read audio clip"):
+        read_wav_clip(missing.as_uri())
+
+
+def test_read_wav_clip_garbage_file_normalized(tmp_path: Path) -> None:
+    # A readable file whose bytes are not WAV normalizes via the decode path.
+    garbage = tmp_path / "garbage.wav"
+    garbage.write_bytes(b"definitely not a wav file")
+    with pytest.raises(AudioProcessingError, match="could not decode"):
+        read_wav_clip(garbage.as_uri())

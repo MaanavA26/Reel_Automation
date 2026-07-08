@@ -70,6 +70,7 @@ this synthesizer. No double pause.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -153,7 +154,10 @@ class NarrationSynthesizer:
         segment takes the verbatim fast path (Decision 6); two or more are
         decoded, spliced with `splice_with_pauses`, re-encoded, and persisted
         via this tool's own sink, with `cue_timings` computed from the exact
-        sample layout (Decisions 2-3).
+        sample layout (Decisions 2-3). That blocking decode/splice/re-encode/
+        write work runs off the event loop (``asyncio.to_thread``, mirroring
+        `KokoroTtsProvider.synthesize` / `FfmpegCompositionService.render`) in
+        one synchronous seam, `_splice_and_persist`.
         """
         if not segments:
             raise NarrationError("no narration segments to synthesize")
@@ -173,6 +177,17 @@ class NarrationSynthesizer:
                 clip_uris=[clip.audio_uri],
             )
 
+        return await asyncio.to_thread(self._splice_and_persist, clips, voice)
+
+    def _splice_and_persist(self, clips: list[SynthesizedSpeech], voice: str) -> BeatNarration:
+        """Decode, splice, re-encode, and persist the multi-clip narration. Sync.
+
+        The blocking half of `synthesize` (pure CPU + file I/O — no awaits),
+        factored out so the async path can offload it wholesale via
+        ``asyncio.to_thread`` while the exact-offset math stays directly
+        testable without an event loop. Raises `NarrationError` for any
+        decode/splice contract failure (Decision 5).
+        """
         decoded = [self._read_clip(clip.audio_uri) for clip in clips]
         try:
             samples, sample_rate = splice_with_pauses(decoded, self._pause_ms)

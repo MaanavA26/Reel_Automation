@@ -166,6 +166,35 @@ def test_per_beat_synthesis_failure_propagates_unwrapped(tmp_path: Path) -> None
         _synthesize(synthesizer, segments=_SEGMENTS)
 
 
+def test_missing_clip_file_normalized_to_narration_error(tmp_path: Path) -> None:
+    # A per-beat clip whose URI points at a file that no longer exists must
+    # surface as NarrationError (via the shared audio contract) — never a raw
+    # FileNotFoundError/OSError escaping `synthesize`.
+    class _VanishingSink(FileSink):
+        def __call__(self, audio: bytes) -> str:
+            uri = super().__call__(audio)
+            Path(uri.removeprefix("file://")).unlink()  # gone before the read-back
+            return uri
+
+    inner = WavFakeTTSProvider(_VanishingSink(tmp_path, "clip"))
+    synthesizer = NarrationSynthesizer(inner, FileSink(tmp_path, "final"))
+    with pytest.raises(NarrationError, match="could not read audio clip"):
+        _synthesize(synthesizer, segments=["One.", "Two."])
+
+
+def test_garbage_clip_bytes_normalized_to_narration_error(tmp_path: Path) -> None:
+    # A per-beat clip whose file holds non-WAV bytes must surface as
+    # NarrationError — never a raw wave.Error/EOFError.
+    class _CorruptingSink(FileSink):
+        def __call__(self, audio: bytes) -> str:
+            return super().__call__(b"definitely not a wav file")
+
+    inner = WavFakeTTSProvider(_CorruptingSink(tmp_path, "clip"))
+    synthesizer = NarrationSynthesizer(inner, FileSink(tmp_path, "final"))
+    with pytest.raises(NarrationError, match="could not decode"):
+        _synthesize(synthesizer, segments=["One.", "Two."])
+
+
 def test_sample_rate_mismatch_normalized_to_narration_error(tmp_path: Path) -> None:
     inner = WavFakeTTSProvider(FileSink(tmp_path, "clip"), rate_by_call=[8000, 16000])
     synthesizer = NarrationSynthesizer(inner, FileSink(tmp_path, "final"))

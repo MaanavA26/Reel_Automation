@@ -346,6 +346,71 @@ def test_pipeline_wires_narration_synthesizer_from_media_deps(tmp_path: Path) ->
     assert plan.captions.cues[-1].end_ms == plan.audio.duration_ms == plan.video.duration_ms
 
 
+def test_pipeline_per_beat_narration_and_word_alignment_together(tmp_path: Path) -> None:
+    """The combined ADR 0067 integration: both seams active on one CaptionTrack.
+
+    MediaDeps carries BOTH a `narration_synthesizer` AND a `word_aligner`
+    (exactly what `narration_per_beat=True` + `aeneas_python_bin` wires live),
+    exercised end to end through `VideoPipeline` -> `MediaPipeline.build()`:
+    cue boundaries must be the synthesizer's exact construction-time offsets
+    (WavFake arithmetic: 1 ms/char clips + the configured 100ms gap, each
+    cue owning its trailing gap) AND every cue must carry per-clip word
+    timings shifted onto the narration clock by that clip's exact start —
+    both asserted on the same resulting `CaptionTrack`, not separately.
+    """
+    inner = WavFakeTTSProvider(FileSink(tmp_path, "clip"))
+    synthesizer = NarrationSynthesizer(inner, FileSink(tmp_path, "final"), pause_ms=100)
+    # 200 ms/word -> a constant 5 words/sec per clip, under the ADR 0066
+    # guard, so every cue keeps its aligned words.
+    aligner = FakeWordAligner(ms_per_word=200)
+    tts = FakeTTSProvider(ms_per_char=10)
+    pipeline = VideoPipeline(
+        _research_deps(),
+        MediaDeps(
+            tts=tts,
+            composition=FakeCompositionService(),
+            word_aligner=aligner,
+            narration_synthesizer=synthesizer,
+        ),
+    )
+    bundle = asyncio.run(pipeline.create_bundle("topic"))
+    plan = bundle.media_plan
+    segments = plan.script_segments
+    cues = plan.captions.cues
+
+    # Exact construction-time boundaries, computed independently from the
+    # WavFake contract (duration == len(text) ms) + the 100ms inter-beat gap
+    # owned by the earlier cue.
+    starts: list[int] = []
+    cursor = 0
+    for segment in segments:
+        starts.append(cursor)
+        cursor += len(segment) + 100
+    total_ms = cursor - 100
+    expected = [
+        (start, starts[i + 1] if i + 1 < len(starts) else total_ms)
+        for i, start in enumerate(starts)
+    ]
+    assert [(c.start_ms, c.end_ms) for c in cues] == expected
+    assert plan.audio.duration_ms == total_ms
+
+    # One aligner call per clip, each against that clip's own audio — never
+    # the spliced final narration — and never the whole-narration provider.
+    assert len(aligner.calls) == len(segments)
+    assert [call.segments for call in aligner.calls] == [[s] for s in segments]
+    assert all(call.audio_path != plan.audio.audio_uri for call in aligner.calls)
+    assert tts.calls == []
+
+    # Per-clip word timings, offset by each clip's exact start: the fake's
+    # clip-relative 200ms cadence restarts at 0 for every clip, so cue i's
+    # words must read start_i + k*200 on the narration clock.
+    for cue, start in zip(cues, starts, strict=True):
+        assert len(cue.words) > 0
+        assert [(w.start_ms, w.end_ms) for w in cue.words] == [
+            (start + k * 200, start + (k + 1) * 200) for k in range(len(cue.words))
+        ]
+
+
 def test_pipeline_passes_narrative_through_to_composition() -> None:
     composition = FakeCompositionService()
     pipeline = VideoPipeline(

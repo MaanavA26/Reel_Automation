@@ -87,6 +87,7 @@ Design decisions, made explicit rather than left implicit:
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 # DEFAULT_PAUSE_MS moved to `app.media.audio` (its shared home, ADR 0067) and is
@@ -171,7 +172,10 @@ class SegmentedTTSProvider:
         sequentially via the wrapped provider (any failure propagates
         unchanged — see Decision 6), decoded, spliced with the shared
         `app.media.audio.splice_with_pauses`, re-encoded, and persisted via
-        this provider's own `sink`.
+        this provider's own `sink` — that blocking decode/splice/re-encode/
+        write work runs off the event loop (``asyncio.to_thread``, mirroring
+        `KokoroTtsProvider.synthesize` / `FfmpegCompositionService.render`)
+        in one synchronous seam, `_splice_and_persist`.
         """
         sentences = split_into_sentences(text)
         if not sentences:
@@ -184,6 +188,16 @@ class SegmentedTTSProvider:
         for sentence in sentences:
             clips.append(await self._inner.synthesize(text=sentence, voice=voice))
 
+        return await asyncio.to_thread(self._splice_and_persist, clips, voice)
+
+    def _splice_and_persist(self, clips: list[SynthesizedSpeech], voice: str) -> SynthesizedSpeech:
+        """Decode, splice, re-encode, and persist the multi-sentence clip. Sync.
+
+        The blocking half of `synthesize` (pure CPU + file I/O — no awaits),
+        factored out so the async path can offload it wholesale via
+        ``asyncio.to_thread``. Raises `SegmentedTtsError` for any decode/splice
+        contract failure (module docstring, Decisions 3-4).
+        """
         decoded = [self._read_pcm_samples(clip.audio_uri) for clip in clips]
         try:
             samples, sample_rate = splice_with_pauses(decoded, self._pause_ms)

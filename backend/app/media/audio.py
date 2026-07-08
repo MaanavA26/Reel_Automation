@@ -73,7 +73,10 @@ def decode_wav_pcm16(audio_bytes: bytes) -> tuple[list[float], int]:
                 )
             sample_rate = wav_in.getframerate()
             raw_frames = wav_in.readframes(wav_in.getnframes())
-    except wave.Error as exc:
+    except (wave.Error, EOFError) as exc:
+        # `wave.open` raises bare `EOFError` (not `wave.Error`) on empty or
+        # truncated bytes — normalize both so no stdlib error type escapes
+        # this module's contract.
         raise AudioProcessingError(f"could not decode the clip as WAV: {exc}") from exc
 
     pcm = array.array("h")  # signed 16-bit, matches encode_wav_pcm16's output
@@ -134,10 +137,17 @@ def read_wav_clip(audio_uri: str) -> tuple[list[float], int]:
     convention the ffmpeg composition adapter and `AeneasAligner` use) rather
     than reimplementing it, normalizing its `CompositionError` to this
     module's own error type. Deterministic file I/O — the one non-pure
-    function here, kept beside the decode it feeds.
+    function here, kept beside the decode it feeds. A missing or unreadable
+    file is normalized the same way (`AudioProcessingError`, original error
+    chained) — no raw `FileNotFoundError`/`OSError` escapes this module's
+    contract.
     """
     try:
         path = resolve_local_path(audio_uri)
     except CompositionError as exc:
         raise AudioProcessingError(str(exc)) from exc
-    return decode_wav_pcm16(path.read_bytes())
+    try:
+        audio_bytes = path.read_bytes()
+    except OSError as exc:
+        raise AudioProcessingError(f"could not read audio clip at {audio_uri!r}: {exc}") from exc
+    return decode_wav_pcm16(audio_bytes)

@@ -173,6 +173,19 @@ directions.
   router is the inner provider, the TTS supervisor's judgment now runs per
   beat rather than once — more model calls, also unmeasured; acceptable under
   the quality-over-speed posture, but worth watching on the live run.
+- **Costs: N aligner subprocesses instead of 1.** When a `WordAligner` is
+  configured, the legacy path shells out to aeneas once for the whole
+  narration; the per-beat path spawns one subprocess per beat. Each task is
+  much shorter, so total alignment wall-clock stays comparable — but the
+  per-process startup overhead multiplies by N, and that is real. Explicitly
+  accepted for correctness: short, isolated tasks are the entire point (they
+  deny aeneas's cumulative long-audio DTW drift anywhere to accumulate,
+  #154's decisive measurement). The owner's live verification (PR #160,
+  2026-07-08 — real Kokoro + real per-clip aeneas + real ffmpeg) ran the
+  5-beat render through this path and it completed normally with every cue
+  in the plausible speaking-rate band. Alignments run sequentially (same
+  posture as the N syntheses); parallelizing via `asyncio.gather` is a
+  possible later optimization, deliberately not taken here.
 - **WAV/PCM16-mono input required** from the inner provider on the
   multi-beat path (same scope limit as ADR 0064): a compressed-audio vendor
   clip fails loud with `NarrationError`, untested against any real non-Kokoro

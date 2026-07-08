@@ -388,3 +388,27 @@ def test_narration_per_beat_set_wires_a_real_synthesizer(tmp_path: object) -> No
     assert isinstance(bundle.deps.narration_synthesizer, NarrationSynthesizer)
     assert bundle.deps.narration_synthesizer._tts is bundle.deps.tts  # type: ignore[attr-defined]
     assert len(bundle.closables) == 1
+
+
+def test_narration_per_beat_and_aeneas_together_wire_both_seams(tmp_path: object) -> None:
+    # The combined configuration the config docstring names ("word alignment
+    # runs per clip", ADR 0067): narration_per_beat AND aeneas_python_bin set
+    # together must wire BOTH seams onto MediaDeps without interfering — the
+    # per-beat synthesizer still wraps the same supervised TTS provider, the
+    # aligner still points at the configured interpreter, and neither adds a
+    # closable (a tool over built seams + a subprocess contract).
+    from app.media.alignment.aeneas import AeneasAligner
+    from app.media.narration import NarrationSynthesizer
+
+    bundle = build_media_deps(
+        _settings(
+            media_output_dir=str(tmp_path),
+            narration_per_beat=True,
+            aeneas_python_bin="/opt/aeneas-venv/bin/python3",
+        )
+    )
+    assert isinstance(bundle.deps.narration_synthesizer, NarrationSynthesizer)
+    assert bundle.deps.narration_synthesizer._tts is bundle.deps.tts  # type: ignore[attr-defined]
+    assert isinstance(bundle.deps.word_aligner, AeneasAligner)
+    assert bundle.deps.word_aligner._python_bin == "/opt/aeneas-venv/bin/python3"  # type: ignore[attr-defined]
+    assert len(bundle.closables) == 1
